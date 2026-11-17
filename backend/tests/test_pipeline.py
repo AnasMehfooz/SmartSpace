@@ -1,0 +1,182 @@
+"""Full pipeline on the fixture workspace (SDD 15.1): index -> search -> summaries -> chat -> purge -> re-index.
+
+Uses the hash test embedder and the stub LLM server, so it runs offline in ~1 minute.
+"""
+
+import time
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.main import create_app
+from tests.conftest import auth, make_config, parse_sse, wait_for
+from tests.fixtures.make_fixtures import build_fixture_folder
+from tests.search_eval import evaluate
+from tests.stub_llm import RAG_ANSWER, StubLLMServer
+
+
+def _idle_and_summarised(c) -> bool:
+    s = c.get("/api/v1/index/status").json()
+    return s["state"] == "idle" and s["pending"] == 0 and s["processing"] == 0 and s["summaries_pending"] == 0
+
+
+@pytest.fixture(scope="module")
+def env(tmp_path_factory):
+    base = tmp_path_factory.mktemp("pipeline")
+    ws = build_fixture_folder(base / "workspace")
+    with StubLLMServer() as llm:
+        with TestClient(create_app(make_config(base / "app", llm_url=llm.url))) as c:
+            auth(c)
+            assert c.post("/api/v1/models/emb-test/activate").status_code == 200
+            assert c.post("/api/v1/models/llm-test/activate").status_code == 200
+            assert c.put("/api/v1/workspace", json={"root_path": str(ws)}).status_code == 200
+            assert c.post("/api/v1/index/start").status_code == 202
+            assert wait_for(lambda: _idle_and_summarised(c), timeout=240), c.get("/api/v1/index/status").json()
+            yield c, ws, llm
+
+
+def _paths(c, query, **extra):
+    r = c.post("/api/v1/search", json={"query": query, **extra})
+    assert r.status_code == 200, r.text
+    return [x["rel_path"] for x in r.json()["results"]]
+
+
+def test_statuses_and_exclusions(env):
+    c, ws, _ = env
+    s = c.get("/api/v1/index/status").json()
+    assert (s["total"], s["indexed"], s["skipped"], s["errors"]) == (17, 15, 2, 0)
+    assert s["summaries_done"] == 15
+    files = {f["rel_path"]: f for f in c.get("/api/v1/files?limit=100").json()["items"]}
+    assert files["Misc/empty.txt"]["skip_reason"] == "empty"
+    assert files["Misc/song.mp3"]["skip_reason"] == "unsupported"
+    for excluded in ("node_modules/pkg/readme.txt", ".hidden/secret.txt", "Misc/~$lockfile.docx"):
+        assert excluded not in files
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("Mietvertrag Kaution", "Housing/Mietvertrag_2024.pdf"),
+    ("INV-20417", "Finance/Invoice_Laptop_2024.pdf"),
+    ("Haftpflichtversicherung", "Scans/Scanned_Insurance_Letter.pdf"),   # OCR'd scanned PDF
+    ("cappuccino", "Images/receipt_coffee.png"),                          # OCR'd image
+    ("overfitting", "University/Machine_Learning_Intro.pptx"),
+    ("Lebenslauf Python", "Personal/Lebenslauf_Anna_Schmidt.docx"),
+    ("pancakes", "Notes/Pancake_Recipe.md"),
+])
+def test_search_expected_file_in_top3(env, query, expected):
+    c, _, _ = env
+    assert expected in _paths(c, query)[:3]
+
+
+def test_search_eval_with_hash_embedder(env):
+    c, _, _ = env
+    res = evaluate(lambda q: _paths(c, q, limit=10))
+    # the hash embedder has no cross-lingual semantics; the real model reaches recall@10 = 1.0
+    assert res["recall@10"] >= 0.7, res
+
+
+def test_search_filters_and_quick_mode(env):
+    c, _, _ = env
+    assert _paths(c, "Berlin", filters={"folder": "Finance"}) and all(
+        p.startswith("Finance/") for p in _paths(c, "Berlin", filters={"folder": "Finance"}))
+    assert all(p.endswith(".pdf") for p in _paths(c, "Anna", filters={"ext": ["pdf"]}))
+    assert _paths(c, "Miete", filters={"doc_type": "contract"}) == ["Housing/Mietvertrag_2024.pdf"]
+    quick = c.post("/api/v1/search", json={"query": "rent", "mode": "quick"}).json()["results"]
+    assert len(quick) <= 6 and "summary" not in quick[0]
+    full = c.post("/api/v1/search", json={"query": "Mietvertrag"}).json()["results"][0]
+    assert full["summary"].startswith("Stub summary") and full["doc_type"] == "contract" and full["tags"]
+    assert "<mark>" in full["snippet"]["text"]
+
+
+def test_tree_detail_chunks_preview(env):
+    c, _, _ = env
+    root = {n["name"]: n for n in c.get("/api/v1/files/tree").json()}
+    assert root["Housing"]["type"] == "dir" and root["Housing"]["child_count"] == 1
+    leaf = c.get("/api/v1/files/tree", params={"parent": "Housing"}).json()[0]
+    d = c.get(f"/api/v1/files/{leaf['file_id']}").json()
+    assert d["language"] == "de" and d["summary"]["doc_type"] == "contract" and d["chunk_count"] >= 1
+    chunks = c.get(f"/api/v1/files/{leaf['file_id']}/chunks").json()
+    assert chunks["total"] >= 2 and any(ch["source"] == "summary" for ch in chunks["items"])
+    img = next(f for f in c.get("/api/v1/files?kind=image").json()["items"])
+    r = c.get(f"/api/v1/files/{img['id']}/preview")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg" and r.content[:2] == b"\xff\xd8"
+
+
+def test_user_tags(env):
+    c, _, _ = env
+    fid = c.get("/api/v1/files?q_name=Steuer").json()["items"][0]["id"]
+    d = c.put(f"/api/v1/files/{fid}/tags", json={"tags": ["Steuern", "2023", "steuern"]}).json()
+    user = sorted(t["name"] for t in d["tags"] if t["source"] == "user")
+    assert user == ["2023", "steuern"]
+    assert _paths(c, "Euro", filters={"tags": ["2023"]}) == ["Finance/Steuererklaerung_2023.pdf"]
+
+
+def test_chat_rag_with_citations_and_rewrite(env):
+    c, _, llm = env
+    sid = c.post("/api/v1/chat/sessions", json={}).json()["id"]
+    with c.stream("POST", f"/api/v1/chat/sessions/{sid}/messages", json={"content": "Mietvertrag: wie hoch ist die Miete?"}) as r:
+        events = parse_sse(r.iter_lines())
+    names = [e for e, _ in events]
+    assert names[0] == "meta" and names[1] == "files" and names[-2:] == ["sources", "done"]
+    assert "".join(d["t"] for e, d in events if e == "token") == RAG_ANSWER
+    cites = dict(events)["sources"]["citations"]
+    assert cites and cites[0]["n"] == 1 and cites[0]["file_id"] > 0
+    done = dict(events)["done"]
+    assert done["tokens_in"] == 123 and done["failed"] is False
+    # the system prompt carries numbered, quoted passages
+    system = next(m for m in llm.app.state.requests[-1]["messages"] if m["role"] == "system")["content"]
+    assert "[1] (file:" in system and '"""' in system
+    # second turn -> query rewrite request (no system prompt) happens first
+    n_before = len(llm.app.state.requests)
+    with c.stream("POST", f"/api/v1/chat/sessions/{sid}/messages", json={"content": "und die Kaution?"}) as r:
+        list(r.iter_lines())
+    new = llm.app.state.requests[n_before:]
+    assert "Last question: und die Kaution?" in new[0]["messages"][0]["content"]
+    session = c.get(f"/api/v1/chat/sessions/{sid}").json()
+    assert session["title"].startswith("Mietvertrag") and len(session["messages"]) == 4
+    assert session["messages"][1]["citations"][0]["n"] == 1
+
+
+def test_watcher_picks_up_new_changed_and_deleted_files(env):
+    c, ws, _ = env
+    f = ws / "Notes" / "gym.txt"
+    f.write_text("Gym membership: monthly fee 39 EUR.", encoding="utf-8")
+    assert wait_for(lambda: "Notes/gym.txt" in _paths(c, "gym membership"), timeout=30)
+    fid = c.get("/api/v1/files?q_name=gym").json()["items"][0]["id"]
+    f.rename(ws / "Notes" / "fitness.txt")
+    assert wait_for(lambda: c.get(f"/api/v1/files/{fid}").json().get("rel_path") == "Notes/fitness.txt", timeout=30)
+    (ws / "Notes" / "fitness.txt").unlink()
+    assert wait_for(lambda: c.get(f"/api/v1/files/{fid}").status_code == 404, timeout=30)
+
+
+def test_reindex_file_and_remove_from_index(env):
+    c, _, _ = env
+    fid = c.get("/api/v1/files?q_name=Pancake").json()["items"][0]["id"]
+    assert c.post(f"/api/v1/files/{fid}/reindex").status_code == 202
+    assert wait_for(lambda: c.get(f"/api/v1/files/{fid}").json()["status"] == "indexed", timeout=30)
+    d = c.delete(f"/api/v1/files/{fid}/index").json()
+    assert d["status"] == "skipped" and d["skip_reason"] == "excluded" and d["chunk_count"] == 0
+    assert "Notes/Pancake_Recipe.md" not in _paths(c, "pancakes")
+
+
+def test_embedding_switch_requires_confirmation(env):
+    c, _, _ = env
+    r = c.post("/api/v1/models/emb-test2/activate", json={})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "REINDEX_REQUIRED"
+    r = c.post("/api/v1/models/emb-test2/activate", json={"confirm_reindex": True})
+    assert r.status_code == 200 and r.json()["reindex"] is True
+    time.sleep(1)
+    assert wait_for(lambda: _idle_and_summarised(c), timeout=120)
+    assert c.get("/api/v1/index/status").json()["embedding_model"] == "emb-test2"
+    assert "Finance/Invoice_Laptop_2024.pdf" in _paths(c, "INV-20417")[:3]
+
+
+def test_purge_index_then_reindex(env):
+    c, _, _ = env
+    r = c.post("/api/v1/privacy/purge", json={"scope": "index", "confirm": True}).json()
+    assert r["items_deleted"] > 0
+    o = c.get("/api/v1/privacy/overview").json()
+    assert (o["chunks"], o["vectors"], o["summaries"], o["files_indexed"]) == (0, 0, 0, 0)
+    assert _paths(c, "Mietvertrag") == [] or _paths(c, "Mietvertrag")[0] == "Housing/Mietvertrag_2024.pdf"
+    assert c.post("/api/v1/index/start").status_code == 202
+    assert wait_for(lambda: c.get("/api/v1/index/status").json()["indexed"] >= 14, timeout=180)
+    assert "Housing/Mietvertrag_2024.pdf" in _paths(c, "Mietvertrag Kaution")[:3]

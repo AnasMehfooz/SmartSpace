@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "updated": "2026-11-17",
+  "notes": "Data-only catalog (SDD 2.4, 9.5). URLs are pinned to a Hugging Face commit; every file is SHA-256 verified. Sizes in bytes.",
+  "tier_ctx_cap": {"0": 4096, "1": 4096, "2": 6144, "3": 8192, "4": 8192},
+  "tier_defaults": {
+    "0": {"embedding": "emb-mini", "llm": "llm-1b"},
+    "1": {"embedding": "emb-mini", "llm": "llm-3b"},
+    "2": {"embedding": "emb-mini", "llm": "llm-3b"},
+    "3": {"embedding": "emb-mini", "llm": "llm-7b"},
+    "4": {"embedding": "emb-large", "llm": "llm-14b"}
+  },
+  "models": [
+    {
+      "id": "emb-mini",
+      "role": "embedding",
+      "display_name": "Multilingual MiniLM-L12 v2 (ONNX)",
+      "engine": "fastembed",
+      "fastembed_name": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "dim": 384,
+      "query_prefix": "",
+      "passage_prefix": "",
+      "size_bytes": 252138706,
+      "min_ram_gb": 4,
+      "tiers": [0, 1, 2, 3],
+      "languages": ["de", "en"],
+      "license": "apache-2.0",
+      "files": [
+        {"path": "model_optimized.onnx", "size_bytes": 235052644, "sha256": "634d0f66c29dc934c8fa72b8a4fe91dd4d420a22f1d82a241058d4316e659a99",
+         "url": "https://huggingface.co/Qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q/resolve/faf4aa4225822f3bc6376869cb1164e8e3feedd0/model_optimized.onnx"},
+        {"path": "tokenizer.json", "size_bytes": 17083009, "sha256": "fa685fc160bbdbab64058d4fc91b60e62d207e8dc60b9af5c002c5ab946ded00",
+         "url": "https://huggingface.co/Qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q/resolve/faf4aa4225822f3bc6376869cb1164e8e3feedd0/tokenizer.json"},
+        {"path": "config.json", "size_bytes": 673, "sha256": "c8ec081fdad2df991bf5abbf18418fec7a5cdaa421f60ffb060a30040b8c376f",
+         "url": "https://huggingface.co/Qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q/resolve/faf4aa4225822f3bc6376869cb1164e8e3feedd0/config.json"},
+        {"path": "special_tokens_map.json", "size_bytes": 964, "sha256": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+         "url": "https://huggingface.co/Qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q/resolve/faf4aa4225822f3bc6376869cb1164e8e3feedd0/special_tokens_map.json"},
+        {"path": "tokenizer_config.json", "size_bytes": 1416, "sha256": "0666eebf692422757e1dddf3c9fb1ded73ba3dc726c5828671fc89e45bf3609f",
+         "url": "https://huggingface.co/Qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q/resolve/faf4aa4225822f3bc6376869cb1164e8e3feedd0/tokenizer_config.json"}
+      ]
+    },
+    {
+      "id": "emb-large",
+      "role": "embedding",
+      "display_name": "Multilingual E5 Large (ONNX)",
+      "engine": "fastembed",
+      "fastembed_name": "intfloat/multilingual-e5-large",
+      "dim": 1024,
+      "query_prefix": "query: ",
+      "passage_prefix": "passage: ",
+      "size_bytes": 2252994762,
+      "min_ram_gb": 12,
+      "tiers": [3, 4],
+      "languages": ["de", "en"],
+      "license": "mit",
+      "files": [
+        {"path": "model.onnx", "size_bytes": 545851, "sha256": "1c09780c907c8a91a77a6ab1fd231f79e090d2907ca431223703dfebeed3d36c",
+         "url": "https://huggingface.co/Qdrant/multilingual-e5-large-onnx/resolve/ac6781cd1cf88b8306a536d7c9d18a5bd57cc14b/model.onnx"},
+        {"path": "model.onnx_data", "size_bytes": 2235363328, "sha256": "0cf1883fee81c63819a44e2ba0efa51d4043d9759685a4ebebbde97e0623d15c",
+         "url": "https://huggingface.co/Qdrant/multilingual-e5-large-onnx/resolve/ac6781cd1cf88b8306a536d7c9d18a5bd57cc14b/model.onnx_data"},
+        {"path": "tokenizer.json", "size_bytes": 17082756, "sha256": "f59925fcb90c92b894cb93e51bb9b4a6105c5c249fe54ce1c704420ac39b81af",
+         "url": "https://huggingface.co/Qdrant/multilingual-e5-large-onnx/resolve/ac6781cd1cf88b8306a536d7c9d18a5bd57cc14b/tokenizer.json"},
+        {"path": "config.json", "size_bytes": 716, "sha256": "1de8c3be1f344c0eefa4962480a006f8639f416dfafaa95a770e3cf4bceae6a4",
+         "url": "https://huggingface.co/Qdrant/multilingual-e5-large-onnx/resolve/ac6781cd1cf88b8306a536d7c9d18a5bd57cc14b/config.json"},
+        {"path": "special_tokens_map.json", "size_bytes": 964, "sha256": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+         "url": "https://huggingface.co/Qdrant/multilingual-e5-large-onnx/resolve/ac6781cd1cf88b8306a536d7c9d18a5bd57cc14b/special_tokens_map.json"},
+        {"path": "tokenizer_config.json", "size_bytes": 1147, "sha256": "f90024142df07163e5e6c5b9a6ad7c8c68b22a9112af11e3db4559a9ff90f737",
+         "url": "https://huggingface.co/Qdrant/multilingual-e5-large-onnx/resolve/ac6781cd1cf88b8306a536d7c9d18a5bd57cc14b/tokenizer_config.json"}
+      ]
+    },
+    {
+      "id": "ocr-rapid",
+      "role": "ocr",
+      "display_name": "RapidOCR PP-OCR det + rec + cls (ONNX, bundled)",
+      "engine": "rapidocr",
+      "bundled": true,
+      "size_bytes": 15000000,
+      "tiers": [0, 1, 2, 3, 4],
+      "languages": ["de", "en"],
+      "license": "apache-2.0",
+      "files": []
+    },
+    {
+      "id": "llm-1b",
+      "role": "llm",
+      "display_name": "Qwen2.5 1.5B Instruct (Q4_K_M)",
+      "file_name": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+      "quant": "Q4_K_M",
+      "size_bytes": 1117320736,
+      "n_layers": 28, "n_kv_heads": 2, "head_dim": 128,
+      "max_ctx": 32768, "ctx_cap": 4096,
+      "min_ram_gb": 6, "min_vram_gb": 0,
+      "tiers": [0],
+      "languages": ["de", "en"],
+      "license": "apache-2.0",
+      "files": [
+        {"path": "qwen2.5-1.5b-instruct-q4_k_m.gguf", "size_bytes": 1117320736, "sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+         "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf"}
+      ]
+    },
+    {
+      "id": "llm-3b",
+      "role": "llm",
+      "display_name": "Qwen2.5 3B Instruct (Q4_K_M)",
+      "file_name": "qwen2.5-3b-instruct-q4_k_m.gguf",
+      "quant": "Q4_K_M",
+      "size_bytes": 2104932768,
+      "n_layers": 36, "n_kv_heads": 2, "head_dim": 128,
+      "max_ctx": 32768, "ctx_cap": 6144,
+      "min_ram_gb": 8, "min_vram_gb": 4,
+      "tiers": [1, 2],
+      "languages": ["de", "en"],
+      "license": "qwen-research (non-commercial)",
+      "files": [
+        {"path": "qwen2.5-3b-instruct-q4_k_m.gguf", "size_bytes": 2104932768, "sha256": "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",
+         "url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/7dabda4d13d513e3e842b20f0d435c732f172cbe/qwen2.5-3b-instruct-q4_k_m.gguf"}
+      ]
+    },
+    {
+      "id": "llm-7b",
+      "role": "llm",
+      "display_name": "Qwen2.5 7B Instruct (Q4_K_M)",
+      "file_name": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+      "quant": "Q4_K_M",
+      "size_bytes": 4683073632,
+      "n_layers": 28, "n_kv_heads": 4, "head_dim": 128,
+      "max_ctx": 32768, "ctx_cap": 8192,
+      "min_ram_gb": 16, "min_vram_gb": 6,
+      "tiers": [3],
+      "languages": ["de", "en"],
+      "license": "apache-2.0",
+      "files": [
+        {"path": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf", "size_bytes": 3993201344, "sha256": "dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db",
+         "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/bb5d59e06d9551d752d08b292a50eb208b07ab1f/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"},
+        {"path": "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf", "size_bytes": 689872288, "sha256": "539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a",
+         "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/bb5d59e06d9551d752d08b292a50eb208b07ab1f/qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf"}
+      ]
+    },
+    {
+      "id": "llm-14b",
+      "role": "llm",
+      "display_name": "Qwen2.5 14B Instruct (Q4_K_M)",
+      "file_name": "qwen2.5-14b-instruct-q4_k_m-00001-of-00003.gguf",
+      "quant": "Q4_K_M",
+      "size_bytes": 8988110496,
+      "n_layers": 48, "n_kv_heads": 8, "head_dim": 128,
+      "max_ctx": 32768, "ctx_cap": 8192,
+      "min_ram_gb": 32, "min_vram_gb": 12,
+      "tiers": [4],
+      "languages": ["de", "en"],
+      "license": "apache-2.0",
+      "files": [
+        {"path": "qwen2.5-14b-instruct-q4_k_m-00001-of-00003.gguf", "size_bytes": 3991999872, "sha256": "a09ea5e7b1eafb1b30b241726c3cc3c905c96f14ad41e246ffa5f44e53904f68",
+         "url": "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/b466e1f8c07172155743e8e1307507d8a4f91fbd/qwen2.5-14b-instruct-q4_k_m-00001-of-00003.gguf"},
+        {"path": "qwen2.5-14b-instruct-q4_k_m-00002-of-00003.gguf", "size_bytes": 3989373504, "sha256": "21b9457d079680d284e90ef69607c4b2d8ef64a09d4729cb7b5e1357bdba41ae",
+         "url": "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/b466e1f8c07172155743e8e1307507d8a4f91fbd/qwen2.5-14b-instruct-q4_k_m-00002-of-00003.gguf"},
+        {"path": "qwen2.5-14b-instruct-q4_k_m-00003-of-00003.gguf", "size_bytes": 1006737120, "sha256": "c8d37006760a387a35216e070e6664d7da927f10be8eb870fef2e3d4833d9976",
+         "url": "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/b466e1f8c07172155743e8e1307507d8a4f91fbd/qwen2.5-14b-instruct-q4_k_m-00003-of-00003.gguf"}
+      ]
+    }
+  ]
+}

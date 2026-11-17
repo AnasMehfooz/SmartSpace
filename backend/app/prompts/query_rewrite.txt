@@ -1,0 +1,5 @@
+Rewrite the last user question so it can be understood without the conversation.
+Keep names, dates and numbers. Same language as the question. Output only the question.
+Conversation:
+{history}
+Last question: {question}

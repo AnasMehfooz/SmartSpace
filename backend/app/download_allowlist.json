@@ -1,0 +1,12 @@
+{
+  "notes": "Hosts the model downloader may contact. Every redirect hop is checked; HTTPS only. Hugging Face serves files from huggingface.co and redirects large files to its *.hf.co CDN (e.g. us.aws.cdn.hf.co). Update this file if the hosts change (SDD 9.4).",
+  "hosts": [
+    "huggingface.co",
+    "cdn-lfs.huggingface.co",
+    "cas-bridge.xethub.hf.co"
+  ],
+  "host_suffixes": [
+    ".hf.co",
+    ".huggingface.co"
+  ]
+}
