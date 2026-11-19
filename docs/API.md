@@ -10,8 +10,8 @@ Base URL `http://127.0.0.1:<port>/api/v1`. Dev: `http://127.0.0.1:8765/api/v1`, 
 - **Errors (all 4xx/5xx):** `{"error": {"code": "FILE_NOT_FOUND", "message": "...", "details": {}}}`. Codes: SDD 10.10
   plus `MODEL_ACTIVE` (409, deleting the active model) and `NOT_FOUND`/`METHOD_NOT_ALLOWED`.
 - **Pagination:** `?limit=50&offset=0` (max 200) → `{items, total, limit, offset}`.
-- **Types:** `npx openapi-typescript ../docs/openapi.json -o src/lib/api-types.ts`
-  (or point it at `http://127.0.0.1:8765/openapi.json`).
+- **Contract:** this file plus `docs/openapi.json` (also served live at `/openapi.json`, which needs the token unless `SS_DEV=1`, and
+  browsable at `/docs` when `SS_DEV=1`). The frontend is JavaScript, so no type generation step is needed.
 - Timestamps are ISO 8601 UTC (`2026-11-17T15:51:30Z`). IDs are integers, model IDs strings.
 
 ## Startup and onboarding flow
@@ -50,7 +50,7 @@ GET  /models/catalog                 no active embedding model -> onboarding
 | | `GET /workspace/stats` | by_status, by_ext, by_kind, chunks, summaries |
 | | `GET/POST /workspace/exclusions`, `DELETE /workspace/exclusions/{id}` | glob relative to root (`Backups/**`, `*.tmp`); built-ins → 422 |
 | files | `GET /files/tree?parent=Housing` | direct children: dirs (`child_count`, `file_count`, `indexed_count`) then files (`file_id`, `status`, `skip_reason`) |
-| | `GET /files?folder&ext=pdf,docx&kind&status=error,skipped&tag&doc_type&q_name&sort=name\|mtime\|size\|indexed_at\|path&order` | paginated |
+| | `GET /files?folder&ext=pdf,docx&kind&status=error,skipped&tag&doc_type&q_name&sort=name\|mtime\|size\|indexed_at\|path&order` | paginated; each item also has `doc_type`, `tags` (list of names, `[]` if none) and `summary_short` (first ~160 chars of the summary, cut at a word, `…` if cut; `null` if no summary) |
 | | `GET /files/{id}` | detail incl. `abs_path` (for `open_file`/`reveal_in_folder`), `summary{text,doc_type,model_id,generated_at}`, `tags[{name,source}]`, `chunk_count` |
 | | `GET /files/{id}/chunks?limit=20` | extracted text (debug/preview) |
 | | `GET /files/{id}/preview?page=1` | `image/jpeg` ≤ 1024 px, images and PDF pages |
@@ -102,6 +102,7 @@ Read with `fetch` + a stream parser so the Bearer header can be sent (`event:` /
 |---|---|
 | `state_changed` | `{state, paused_reason}` |
 | `progress` | `{indexed, total, eta_s, pending, processing, skipped, errors, summaries_done, summaries_pending}` (≤ 2/s) |
+| `file_processing` | `{file_id, rel_path}` when a file starts extraction → "scanning now: …" (files skipped at scan time as `unsupported` never get it) |
 | `file_indexed` / `file_skipped` / `file_removed` | `{file_id}` (+ `reason` for skipped) → invalidate `['files']` |
 | `file_error` | `{file_id, message}` |
 | `summary_done` / `summary_failed` | `{file_id}` |
@@ -124,13 +125,13 @@ Validation errors (unknown session 404, empty message 422, already generating 40
 before the stream starts. The first message also sets the session title (first 40 chars). The first answer after
 start-up waits for llama-server to load (a few seconds on GPU).
 
-```ts
+```js
 // minimal SSE-over-fetch reader
-async function* sse(url: string, token: string, body?: unknown) {
+async function* sse(url, token, body) {
   const res = await fetch(url, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`,
     "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
   if (!res.ok) throw await res.json();               // {error:{code,message,details}}
-  const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
   let buf = "", event = "message";
   for (;;) {
     const { value, done } = await reader.read(); if (done) return;

@@ -17,6 +17,21 @@ if TYPE_CHECKING:
 SORTS = {"name": "f.name COLLATE NOCASE", "mtime": "f.mtime_ns", "size": "f.size_bytes", "indexed_at": "f.indexed_at",
          "path": "f.rel_path COLLATE NOCASE"}
 PREVIEW_MAX = 1024
+SUMMARY_SHORT_CHARS = 160
+
+
+def short_summary(text: str | None, limit: int = SUMMARY_SHORT_CHARS) -> str | None:
+    """First ~`limit` characters of a summary, cut at a word boundary, with an ellipsis if cut."""
+    if not text:
+        return None
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit - 1]
+    space = cut.rfind(" ")
+    if space >= limit // 2:
+        cut = cut[:space]
+    return cut.rstrip(" ,;:.-") + "…"
 
 
 def _like_escape(s: str) -> str:
@@ -99,12 +114,20 @@ class FilesService:
         base = f"FROM files f LEFT JOIN summaries s ON s.file_id = f.id {sql_where}"
         total = self.db.scalar(f"SELECT COUNT(*) {base}", params) or 0
         rows = self.db.query(
-            f"SELECT f.*, s.doc_type {base} ORDER BY {order_sql}, f.id LIMIT ? OFFSET ?", [*params, limit, offset])
+            f"SELECT f.*, s.doc_type, s.summary {base} ORDER BY {order_sql}, f.id LIMIT ? OFFSET ?",
+            [*params, limit, offset])
+        tags: dict[int, list[str]] = {r["id"]: [] for r in rows}
+        if tags:
+            for t in self.db.query(
+                    "SELECT ft.file_id, t.name FROM file_tags ft JOIN tags t ON t.id = ft.tag_id "
+                    f"WHERE ft.file_id IN ({','.join('?' * len(tags))}) ORDER BY ft.source DESC, t.name", list(tags)):
+                tags[t["file_id"]].append(t["name"])
         items = [{
             "id": r["id"], "rel_path": r["rel_path"], "name": r["name"], "ext": r["ext"], "kind": r["kind"],
             "size_bytes": r["size_bytes"], "mtime": ns_to_iso(r["mtime_ns"]), "status": r["status"],
             "skip_reason": r["skip_reason"], "error_message": r["error_message"], "summary_state": r["summary_state"],
             "indexed_at": r["indexed_at"], "doc_type": r["doc_type"],
+            "tags": tags[r["id"]], "summary_short": short_summary(r["summary"]),
         } for r in rows]
         return {"items": items, "total": total, "limit": limit, "offset": offset}
 

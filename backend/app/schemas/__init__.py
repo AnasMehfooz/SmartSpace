@@ -1,5 +1,5 @@
-"""Pydantic request/response models. They define the OpenAPI contract the frontend generates
-TypeScript types from (`openapi-typescript http://127.0.0.1:8765/openapi.json`)."""
+"""Pydantic request/response models. They define the OpenAPI contract (docs/openapi.json, explained in
+docs/API.md) that the JavaScript frontend codes against."""
 
 from __future__ import annotations
 
@@ -250,6 +250,8 @@ class FileListItem(BaseModel):
     summary_state: str
     indexed_at: str | None = None
     doc_type: str | None = None
+    tags: list[str] = []
+    summary_short: str | None = None
 
 
 class SummaryOut(BaseModel):

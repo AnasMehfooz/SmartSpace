@@ -20,6 +20,21 @@ def _idle_and_summarised(c) -> bool:
     return s["state"] == "idle" and s["pending"] == 0 and s["processing"] == 0 and s["summaries_pending"] == 0
 
 
+EVENTS: list[tuple[str, str, dict]] = []
+
+
+def _record_events(c) -> None:
+    """Keep a copy of every event the backend publishes (the SSE streams read the same bus)."""
+    bus = c.app.state.ctx.bus
+    publish = bus.publish
+
+    def recording(topic, event, data):
+        EVENTS.append((topic, event, dict(data)))
+        publish(topic, event, data)
+
+    bus.publish = recording
+
+
 @pytest.fixture(scope="module")
 def env(tmp_path_factory):
     base = tmp_path_factory.mktemp("pipeline")
@@ -27,6 +42,7 @@ def env(tmp_path_factory):
     with StubLLMServer() as llm:
         with TestClient(create_app(make_config(base / "app", llm_url=llm.url))) as c:
             auth(c)
+            _record_events(c)
             assert c.post("/api/v1/models/emb-test/activate").status_code == 200
             assert c.post("/api/v1/models/llm-test/activate").status_code == 200
             assert c.put("/api/v1/workspace", json={"root_path": str(ws)}).status_code == 200
@@ -51,6 +67,37 @@ def test_statuses_and_exclusions(env):
     assert files["Misc/song.mp3"]["skip_reason"] == "unsupported"
     for excluded in ("node_modules/pkg/readme.txt", ".hidden/secret.txt", "Misc/~$lockfile.docx"):
         assert excluded not in files
+
+
+def test_file_processing_event_before_each_extraction(env):
+    c, _, _ = env
+    # unsupported types (song.mp3) are skipped at scan time and never extracted, so they get no event
+    files = {f["id"]: f["rel_path"] for f in c.get("/api/v1/files?limit=100").json()["items"]
+             if f["skip_reason"] != "unsupported"}
+    index = [(e, d) for t, e, d in EVENTS if t == "index"]
+    started = {d["file_id"]: d["rel_path"] for e, d in index if e == "file_processing"}
+    assert started == files  # every extracted file (indexed or skipped) was announced, with its path
+    for fid in started:
+        first = next(i for i, (e, d) in enumerate(index) if e == "file_processing" and d["file_id"] == fid)
+        done = next(i for i, (e, d) in enumerate(index) if e in ("file_indexed", "file_skipped") and d["file_id"] == fid)
+        assert first < done
+
+
+def test_file_list_has_tags_and_short_summary(env):
+    c, _, _ = env
+    items = c.get("/api/v1/files?limit=100").json()["items"]
+    by_path = {f["rel_path"]: f for f in items}
+    for f in items:
+        assert isinstance(f["tags"], list) and "summary_short" in f
+        if f["status"] == "indexed":
+            detail = c.get(f"/api/v1/files/{f['id']}").json()
+            assert f["tags"] == [t["name"] for t in detail["tags"]]
+            assert f["summary_short"] and len(f["summary_short"]) <= 160
+            full = " ".join(detail["summary"]["text"].split())
+            assert full.startswith(f["summary_short"].rstrip("…"))
+        else:
+            assert f["tags"] == [] and f["summary_short"] is None
+    assert by_path["Housing/Mietvertrag_2024.pdf"]["tags"]
 
 
 @pytest.mark.parametrize("query, expected", [

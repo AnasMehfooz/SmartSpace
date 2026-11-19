@@ -1,4 +1,4 @@
-"""Write the OpenAPI contract to docs/openapi.json (frontend generates TS types from it).
+"""Write the OpenAPI contract to docs/openapi.json (the reference for the JavaScript frontend, with docs/API.md).
 
     uv run python export_openapi.py
 """

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.errors import AppError
+from app.services.files import short_summary
 from app.services.hardware import compute_tier
 from app.services.llm_runner import compute_gpu_layers, fallback_layers, kv_cache_mb, parse_devices
 from app.services.paths import ExclusionMatcher, is_within, safe_join, validate_workspace_root
@@ -175,3 +176,12 @@ def test_is_within_is_case_insensitive_on_windows(tmp_path):
 ])
 def test_exclusion_globs(pattern, path, hit):
     assert ExclusionMatcher([pattern]).matches(path) is hit
+
+
+def test_short_summary_cuts_at_word_boundary():
+    assert short_summary(None) is None and short_summary("") is None
+    assert short_summary("  Rental   agreement\nfor a flat. ") == "Rental agreement for a flat."
+    long = "Mietvertrag " * 30
+    out = short_summary(long)
+    assert len(out) <= 160 and out.endswith("…") and out[:-1].endswith("Mietvertrag")
+    assert len(short_summary("x" * 400)) == 160  # no space to cut at: hard cut

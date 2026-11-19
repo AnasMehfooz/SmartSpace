@@ -128,7 +128,7 @@ numbers them, and asks the local model to answer only from those passages and ci
 | Area | Technology |
 |---|---|
 | Desktop shell | Tauri v2 (Rust) |
-| UI | React 18, TypeScript, Vite, Tailwind CSS |
+| UI | React 18 (JavaScript), Vite, Tailwind CSS |
 | Backend | FastAPI, Uvicorn, Pydantic v2, Server-Sent Events |
 | Language model runtime | llama.cpp `llama-server` (CUDA, Vulkan or CPU) with GGUF models |
 | Embeddings | fastembed (ONNX Runtime), multilingual MiniLM or E5 |
@@ -231,7 +231,7 @@ citations, folder watching, model switching, purge and re-index.
 
 - [docs/API.md](docs/API.md): API guide for the frontend (onboarding flow, endpoints, live event streams)
 - [docs/openapi.json](docs/openapi.json): machine-readable API contract
-  (`npx openapi-typescript docs/openapi.json -o src/lib/api-types.ts`)
+- [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md): step-by-step backend test on the demo PC (also written for an AI assistant)
 - [backend/README.md](backend/README.md): backend setup, configuration, packaging and design decisions
 
 ## Repository structure

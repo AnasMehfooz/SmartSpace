@@ -820,6 +820,7 @@ class IndexService:
             self._finish_job(job["id"])
             return
         self.db.execute("UPDATE files SET status='processing', updated_at=? WHERE id=?", (utcnow(), fid))
+        self._publish("file_processing", {"file_id": fid, "rel_path": row["rel_path"]})
         t0 = time.monotonic()
         try:
             self._extract_file(fid, dict(row), root / row["rel_path"], job["priority"])
