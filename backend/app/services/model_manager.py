@@ -132,7 +132,10 @@ class ModelManager:
         hw = self.ctx.hardware.get() or {}
         tier = int(hw.get("tier", 1))
         rec = self.catalog.defaults_for_tier(tier)
+        statuses = {r["id"]: r["status"] for r in self.ctx.db.query("SELECT id, status FROM models")}
         alternatives = []
+        # Every other embedding and language model is offered, also ones above this PC's tier
+        # (fits_hardware false + a note): the user can always choose, the recommendation is only a default.
         for m in self.catalog.models.values():
             if m.role == "ocr" or rec.get(m.role) == m.id:
                 continue
@@ -145,7 +148,17 @@ class ModelManager:
                 note = "may be slow or crash"
             elif m.role == "embedding" and tier >= 3 and m.id != rec.get("embedding"):
                 note = "alternative"
-            alternatives.append({"id": m.id, "role": m.role, "fits_hardware": fits, "note": note})
+            status = statuses.get(m.id, "not_installed")
+            local_copy = self.ctx.local_models.location(m) if status != "installed" else None
+            if status == "installed":
+                note = "already installed" if not note else f"already installed; {note}"
+            elif local_copy:
+                note = "found on this PC, no download needed" if not note else f"found on this PC; {note}"
+            alternatives.append({"id": m.id, "role": m.role, "display_name": m.display_name,
+                                 "size_bytes": m.size_bytes, "fits_hardware": fits, "note": note,
+                                 "status": status, "local_copy": local_copy})
+        alternatives.sort(key=lambda a: (a["role"] != "embedding", a["status"] != "installed",
+                                         a["local_copy"] is None, not a["fits_hardware"], a["size_bytes"]))
 
         warnings: list[str] = []
         disk_free_mb = hw.get("disk_free_mb")
@@ -207,6 +220,8 @@ class ModelManager:
                     "recommended": rec.get(m.role) == m.id,
                     "fits_hardware": self.fits_hardware(m, tier),
                     "download": progress.get(m.id),
+                    "local_copy": (self.ctx.local_models.location(m)
+                                   if r.get("status", "not_installed") != "installed" and not m.bundled else None),
                 }
             )
         return out

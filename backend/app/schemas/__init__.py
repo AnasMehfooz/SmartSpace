@@ -82,6 +82,8 @@ class HardwareOut(BaseModel):
     ram_total_mb: int | None = None
     ram_available_mb: int | None = None
     gpus: list[GpuOut] = []
+    best_gpu: GpuOut | None = Field(default=None, description="The usable GPU with the most VRAM (used for the "
+                                    "tier and the language model); null if none is usable")
     disk_free_mb: int | None = None
     battery: BatteryOut | None = None
     tier: int
@@ -98,6 +100,8 @@ class DownloadProgress(BaseModel):
     speed_bps: int | None = None
     eta_s: int | None = None
     position: int | None = None
+    source: str | None = Field(default=None, description='"network", or "local" while a copy already on this PC '
+                               "is verified and installed")
 
 
 class ModelOut(BaseModel):
@@ -121,13 +125,20 @@ class ModelOut(BaseModel):
     recommended: bool
     fits_hardware: bool
     download: DownloadProgress | None = None
+    local_copy: str | None = Field(default=None, description="Folder of a copy already on this PC; POST "
+                                   "/models/{id}/download then installs it without downloading")
 
 
 class Alternative(BaseModel):
     id: str
     role: str
+    display_name: str | None = None
+    size_bytes: int | None = None
     fits_hardware: bool
     note: str | None = None
+    status: str | None = Field(default=None, description="not_installed / downloading / installed / failed")
+    local_copy: str | None = Field(default=None, description="Folder of a copy already on this PC (reused instead "
+                                   "of downloading); null if none")
 
 
 class RecommendedSet(BaseModel):

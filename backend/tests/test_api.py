@@ -133,3 +133,14 @@ def test_openapi_lists_the_contract(client):
               "/api/v1/index/events", "/api/v1/models/downloads/events", "/api/v1/privacy/purge", "/api/v1/settings",
               "/api/v1/workspace/exclusions", "/api/v1/models/{model_id}/activate", "/api/v1/system/hardware"]:
         assert p in paths, p
+
+
+def test_hardware_reports_best_gpu(client):
+    auth(client)
+    hw = client.get("/api/v1/system/hardware").json()
+    assert "best_gpu" in hw
+    usable = [g for g in hw["gpus"] if g["usable"]]
+    if usable:
+        assert hw["best_gpu"]["vram_mb"] == max(g["vram_mb"] or 0 for g in usable)
+    else:
+        assert hw["best_gpu"] is None

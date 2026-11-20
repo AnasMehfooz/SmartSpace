@@ -197,7 +197,9 @@ class SearchService:
         cand = [t for t in terms if len(t) >= 3 and t not in STOPWORDS]
         if not cand or (allowed is not None and not allowed):
             return set()
-        sql = "SELECT f.id FROM files f WHERE (" + " OR ".join("f.name LIKE ? ESCAPE '\\'" for _ in cand) + ")"
+        # Only files Smart Space reads: removed ("excluded"), skipped and failed files never come back by name.
+        sql = ("SELECT f.id FROM files f WHERE f.status IN ('indexed', 'pending', 'processing') AND ("
+               + " OR ".join("f.name LIKE ? ESCAPE '\\'" for _ in cand) + ")")
         if allowed is not None:
             sql += f" AND f.id IN ({_ints(allowed)})"
         sql += " LIMIT 200"

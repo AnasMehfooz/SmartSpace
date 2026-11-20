@@ -18,6 +18,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# With "powershell -File", "-Variants cpu,vulkan,cuda" arrives as ONE string: split it here.
+$Variants = @($Variants | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest is very slow with the progress bar
 
 # Pinned release. To upgrade: change $Tag and the SHA-256 values (GitHub shows them as asset digests).

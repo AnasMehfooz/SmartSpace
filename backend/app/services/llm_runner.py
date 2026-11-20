@@ -34,6 +34,9 @@ IS_WINDOWS = sys.platform == "win32"
 EXE = "llama-server.exe" if IS_WINDOWS else "llama-server"
 CREATE_NO_WINDOW = 0x08000000 if IS_WINDOWS else 0
 HEALTH_TIMEOUT_S = 60
+# GPU starts can be much slower the first time: the NVIDIA driver compiles CUDA kernels for a new GPU
+# generation (e.g. RTX 50-series) on first use, which took over 60 s on an RTX 5060 Ti. Later starts take seconds.
+HEALTH_TIMEOUT_GPU_S = 300
 OOM_MARKERS = ("out of memory", "failed to allocate", "erroroutofdevicememory", "cudamalloc failed",
                "unable to allocate", "vk::outofdevicememory")
 
@@ -370,13 +373,15 @@ class LlamaServer:
         kv = kv_cache_mb(ctx_size, n_layers, int(m.get("n_kv_heads") or 8), int(m.get("head_dim") or 128))
         model_mb = m.size_bytes / 2**20
 
-        device = None
+        device = None  # passed as --device (only needed when there is more than one device)
+        shown_device = None  # reported in /models/llm/status, also with a single device
         vram_free = 0.0
         if backend != "cpu":
             devs = self.list_devices(exe)
             best = self.pick_device(devs)
             if best is not None:
                 vram_free = float(best["free_mb"])
+                shown_device = best["name"]
                 if len(devs) > 1:
                     device = best["name"]  # e.g. keep layers off a small second GPU / the iGPU
             else:
@@ -388,10 +393,12 @@ class LlamaServer:
         for layers in fallback_layers(ngl, n_layers):
             use_exe = exe if layers > 0 or cpu_exe is None else cpu_exe
             use_backend = backend if layers > 0 else "cpu"
-            ok, err = self._spawn(use_exe, gguf, ctx_size, layers, threads, device if layers > 0 else None)
+            timeout = HEALTH_TIMEOUT_GPU_S if layers > 0 else HEALTH_TIMEOUT_S
+            ok, err = self._spawn(use_exe, gguf, ctx_size, layers, threads, device if layers > 0 else None, timeout)
             if ok:
                 self.state, self.model_id, self.ctx_size = "ready", m.id, ctx_size
-                self.gpu_layers, self.backend, self.device = layers, use_backend, device if layers > 0 else None
+                self.gpu_layers, self.backend = layers, use_backend
+                self.device = (shown_device or device) if layers > 0 else None
                 self.touch()
                 log.info("llama_server_ready", model_id=m.id, ctx=ctx_size, gpu_layers=layers, backend=use_backend)
                 return
@@ -422,7 +429,7 @@ class LlamaServer:
         return False
 
     def _spawn(self, exe: Path, gguf: Path, ctx_size: int, layers: int, threads: int,
-               device: str | None) -> tuple[bool, str]:
+               device: str | None, timeout_s: float = 60) -> tuple[bool, str]:
         cmd = [str(exe), "-m", str(gguf), "--host", "127.0.0.1", "--port", str(self.ctx.cfg.llama_port),
                "-c", str(ctx_size), "-ngl", str(layers), "-t", str(threads), "--parallel", "1", "--no-webui"]
         if device:
@@ -442,13 +449,16 @@ class LlamaServer:
             pass
         self._job.assign(proc)
         self._proc = proc
-        result = self._wait_healthy(proc, HEALTH_TIMEOUT_S, offset)
+        result = self._wait_healthy(proc, timeout_s, offset)
         logf.close()
         if result is True:
             return True, ""
+        # Read the exit code before killing: on Windows a killed process also reports code 1, which made a
+        # start that was only slow look like a crash.
+        exit_code = proc.poll()
         self._kill()
         if result == "oom":
             return False, "out of memory"
-        if proc.returncode is not None and proc.returncode != 0:
-            return False, f"exited with code {proc.returncode}"
-        return False, "did not become healthy in time"
+        if exit_code is not None and exit_code != 0:
+            return False, f"exited with code {exit_code}"
+        return False, f"did not become ready within {int(timeout_s)} s"

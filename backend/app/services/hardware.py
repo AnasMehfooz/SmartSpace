@@ -347,6 +347,10 @@ class HardwareService:
             p["disk_free_mb"] = int(shutil.disk_usage(self.ctx.cfg.data_dir).free // 2**20)
         except OSError:
             pass
+        # The GPU the tier and the language model use (most VRAM among usable ones). Clients show this one;
+        # gpus[] keeps the driver's order, where a small second GPU can come first.
+        usable = [g for g in p.get("gpus", []) if g.get("usable")]
+        p["best_gpu"] = max(usable, key=lambda g: g.get("vram_mb") or 0) if usable else None
         return p
 
     @property

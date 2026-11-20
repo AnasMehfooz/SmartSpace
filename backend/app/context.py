@@ -22,6 +22,7 @@ from app.services.hardware import HardwareService
 from app.services.indexer import PRIORITY_CHANGED, IndexService
 from app.services.llm_client import InteractiveGate, LLMClient
 from app.services.llm_runner import LlamaServer
+from app.services.local_models import LocalModelFinder
 from app.services.model_manager import ModelManager
 from app.services.purge import PurgeService
 from app.services.search import SearchService
@@ -56,6 +57,7 @@ class AppContext:
         if self.hardware.get(scan_if_missing=False):
             self.hardware._apply_tier_defaults(self.hardware.tier)
         self.vectors = VectorStore(cfg.vectors_dir)
+        self.local_models = LocalModelFinder(self)
         self.downloads = DownloadManager(self)
         self.models = ModelManager(self)
         self.embedders = EmbedderManager(self)
@@ -93,6 +95,10 @@ class AppContext:
                 self.hardware.scan()
         except Exception:
             log.exception("hardware_scan_failed")
+        try:
+            self.local_models.scan()  # warm the cache so the catalog can show "found on this PC" at once
+        except Exception:
+            log.exception("local_model_scan_failed")
         try:
             self.embedders.warmup()
         except Exception:

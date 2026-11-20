@@ -3,6 +3,7 @@
 Uses the hash test embedder and the stub LLM server, so it runs offline in ~1 minute.
 """
 
+import re
 import time
 
 import pytest
@@ -12,7 +13,7 @@ from app.main import create_app
 from tests.conftest import auth, make_config, parse_sse, wait_for
 from tests.fixtures.make_fixtures import build_fixture_folder
 from tests.search_eval import evaluate
-from tests.stub_llm import RAG_ANSWER, StubLLMServer
+from tests.stub_llm import RAG_ANSWER, REFUSAL_ANSWER, StubLLMServer
 
 
 def _idle_and_summarised(c) -> bool:
@@ -172,6 +173,10 @@ def test_chat_rag_with_citations_and_rewrite(env):
     # the system prompt carries numbered, quoted passages
     system = next(m for m in llm.app.state.requests[-1]["messages"] if m["role"] == "system")["content"]
     assert "[1] (file:" in system and '"""' in system
+    # one numbered source per file, labelled with its doc type and short summary
+    names = [n.strip() for n in re.findall(r"^\[\d+\] \(file: ([^·)]+)", system, re.M)]
+    assert names and len(names) == len(set(names))
+    assert '(file: Mietvertrag_2024.pdf · contract · "Stub summary of Mietvertrag_2024.pdf.")' in system
     # second turn -> query rewrite request (no system prompt) happens first
     n_before = len(llm.app.state.requests)
     with c.stream("POST", f"/api/v1/chat/sessions/{sid}/messages", json={"content": "und die Kaution?"}) as r:
@@ -227,3 +232,111 @@ def test_purge_index_then_reindex(env):
     assert c.post("/api/v1/index/start").status_code == 202
     assert wait_for(lambda: c.get("/api/v1/index/status").json()["indexed"] >= 14, timeout=180)
     assert "Housing/Mietvertrag_2024.pdf" in _paths(c, "Mietvertrag Kaution")[:3]
+
+
+def _ask(c, sid, content):
+    with c.stream("POST", f"/api/v1/chat/sessions/{sid}/messages", json={"content": content}) as r:
+        events = parse_sse(r.iter_lines())
+    return "".join(d["t"] for e, d in events if e == "token"), dict(events)
+
+
+def _system_requests(llm) -> int:
+    return sum(1 for b in llm.app.state.requests if b["messages"] and b["messages"][0]["role"] == "system")
+
+
+def test_chat_refusal_is_retried_once_when_search_found_the_file(env):
+    c, _, llm = env
+    sid = c.post("/api/v1/chat/sessions", json={}).json()["id"]
+    before = _system_requests(llm)
+    text, ev = _ask(c, sid, "REFUSE_ONCE Mietvertrag Kaution Miete")
+    assert text == RAG_ANSWER  # the held-back refusal never reached the client
+    assert _system_requests(llm) == before + 2
+    hinted = llm.app.state.requests[-1]["messages"][0]["content"]
+    assert "is the closest match" in hinted
+    assert ev["sources"]["citations"] and ev["sources"]["citations"][0]["n"] == 1
+
+
+def test_chat_refusal_has_no_citations(env):
+    c, _, _ = env
+    sid = c.post("/api/v1/chat/sessions", json={}).json()["id"]
+    text, ev = _ask(c, sid, "REFUSE_ALWAYS Mietvertrag Kaution Miete")
+    assert text == REFUSAL_ANSWER
+    assert ev["sources"]["citations"] == []  # it says "not found", so it must not cite files
+    assert ev["files"]["results"]  # clients show these as "possibly related"
+    session = c.get(f"/api/v1/chat/sessions/{sid}").json()
+    assert session["messages"][1]["citations"] == []
+
+
+def test_chat_rewrite_drift_cannot_hide_the_right_file(env):
+    c, _, _ = env
+    sid = c.post("/api/v1/chat/sessions", json={}).json()["id"]
+    _ask(c, sid, "Mietvertrag: wie hoch ist die Miete?")
+    _, ev = _ask(c, sid, "DRIFT_TEST pancakes recipe")
+    # the rewrite drifted to the rental contract, but the original question is searched as well
+    top = [r["rel_path"] for r in ev["files"]["results"]][:2]
+    assert "Notes/Pancake_Recipe.md" in top
+
+
+def test_summary_prompt_names_the_file_language(env):
+    _, _, llm = env
+    prompts = [b["messages"][-1]["content"] for b in llm.app.state.requests if b.get("response_format")]
+    summaries = [p for p in prompts if "summary:" in p]
+    # a worked example (no dates or amounts) is sent as an earlier turn, in the file's language
+    lease_req = next(b for b in llm.app.state.requests
+                     if b.get("response_format") and "File name: Mietvertrag_2024.pdf" in b["messages"][-1]["content"]
+                     and "summary:" in b["messages"][-1]["content"])
+    assert lease_req["messages"][1]["role"] == "assistant" and "Stadtbibliothek" in lease_req["messages"][1]["content"]
+    lease = next(p for p in summaries if "File name: Mietvertrag_2024.pdf" in p)
+    invoice = next(p for p in summaries if "File name: Invoice_Laptop_2024.pdf" in p)
+    assert "written in German" in lease and "written in English" in invoice
+    assert 'not with "This"' in lease and "Use only facts that are written in this document" in lease
+    # the doc type comes from its own short classification request
+    assert any("decide what kind of document" in p and "File name: Steuererklaerung_2023.pdf" in p for p in prompts)
+
+
+def test_removed_file_never_comes_back_by_name(env):
+    c, _, _ = env
+    fid = c.get("/api/v1/files?q_name=Pancake").json()["items"][0]["id"]
+    assert c.delete(f"/api/v1/files/{fid}/index").status_code == 200
+    assert "Notes/Pancake_Recipe.md" not in _paths(c, "pancake recipe")  # not even through the name bonus
+    assert c.post(f"/api/v1/files/{fid}/reindex").status_code == 202  # "Add back"
+    assert wait_for(lambda: "Notes/Pancake_Recipe.md" in _paths(c, "pancake recipe"), timeout=60)
+    assert wait_for(lambda: _idle_and_summarised(c), timeout=120)
+
+
+def test_answer_that_names_the_file_still_gets_its_source(env):
+    c, _, _ = env
+    sid = c.post("/api/v1/chat/sessions", json={}).json()["id"]
+    text, ev = _ask(c, sid, "NAME_ONLY Mietvertrag Miete")
+    assert "[" not in text
+    assert [x["name"] for x in ev["sources"]["citations"]] == ["Mietvertrag_2024.pdf"]
+
+
+def test_answer_without_marker_is_cited_by_the_numbers_it_quotes(env):
+    c, _, _ = env
+    sid = c.post("/api/v1/chat/sessions", json={}).json()["id"]
+    text, ev = _ask(c, sid, "NUMBERS_ONLY Mietvertrag Miete Kaution")
+    assert "[" not in text and "Mietvertrag" not in text
+    cites = ev["sources"]["citations"]
+    assert [x["name"] for x in cites] == ["Mietvertrag_2024.pdf"]
+    # it points at a passage that really holds the numbers, so the client can show and highlight it
+    chunks = c.get(f"/api/v1/files/{cites[0]['file_id']}/chunks?limit=50").json()["items"]
+    quoted = next(ch["text"] for ch in chunks if ch["id"] == cites[0]["chunk_id"])
+    assert "950,00" in quoted and "2.850,00" in quoted
+
+
+def test_numbers_that_are_in_no_source_cite_nothing(env):
+    c, _, _ = env
+    sid = c.post("/api/v1/chat/sessions", json={}).json()["id"]
+    _, ev = _ask(c, sid, "UNKNOWN_NUMBERS Mietvertrag Miete")
+    assert ev["sources"]["citations"] == []
+
+
+def test_undated_sources_are_labelled(env):
+    c, _, llm = env
+    sid = c.post("/api/v1/chat/sessions", json={}).json()["id"]
+    _ask(c, sid, "coffee receipt cappuccino and the Mietvertrag")
+    system = llm.app.state.requests[-1]["messages"][0]["content"]
+    receipt = next(line for line in system.splitlines() if "(file: receipt_coffee.png" in line)
+    lease = next(line for line in system.splitlines() if "(file: Mietvertrag_2024.pdf" in line)
+    assert "· no date" in receipt and "· no date" not in lease  # the receipt has no date, the lease has

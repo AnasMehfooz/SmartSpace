@@ -96,3 +96,61 @@ def test_cancel_queued_download(ctx_client, monkeypatch):
     assert client.post("/api/v1/models/dl-test/cancel").json()["cancelled"] is True
     gate.set()
     assert wait_for(lambda: ctx.models.row("dl-test")["status"] == "not_installed", timeout=20)
+
+
+def _dl_catalog():
+    cat = copy.deepcopy(TEST_CATALOG)
+    dl = next(m for m in cat["models"] if m["id"] == "dl-test")
+    dl["files"][0].update(size_bytes=len(PAYLOAD), sha256=hashlib.sha256(PAYLOAD).hexdigest())
+    dl["size_bytes"] = len(PAYLOAD)
+    return cat
+
+
+def _no_network(_client, url, headers):
+    raise AssertionError("a model already on this PC must not be downloaded")
+
+
+def test_local_copy_is_reused_instead_of_downloading(tmp_path, monkeypatch):
+    other = tmp_path / "elsewhere" / "some-app" / "models"
+    other.mkdir(parents=True)
+    original = other / "weights.bin"
+    original.write_bytes(PAYLOAD)
+    monkeypatch.setenv("SS_MODEL_DIRS", str(tmp_path / "elsewhere"))
+    with TestClient(create_app(make_config(tmp_path / "app", catalog=_dl_catalog()))) as c:
+        auth(c)
+        ctx = c.app.state.ctx
+        monkeypatch.setattr(ctx.downloads, "_open", _no_network)
+        row = next(m for m in c.get("/api/v1/models/catalog").json() if m["id"] == "dl-test")
+        assert row["local_copy"] == str(other)
+        alt = next(a for a in c.get("/api/v1/models/recommendations").json()["alternatives"] if a["id"] == "dl-test")
+        assert alt["local_copy"] == str(other) and "found on this PC" in alt["note"]
+        assert c.post("/api/v1/models/dl-test/download").status_code == 202
+        assert wait_for(lambda: ctx.models.is_installed("dl-test"), timeout=20)
+        dest = ctx.models.model_dir(ctx.catalog.get("dl-test")) / "weights.bin"
+        assert dest.read_bytes() == PAYLOAD
+        assert original.read_bytes() == PAYLOAD  # the other app's file is untouched
+        row = next(m for m in c.get("/api/v1/models/catalog").json() if m["id"] == "dl-test")
+        assert row["status"] == "installed" and row["local_copy"] is None
+
+
+def test_local_copy_with_wrong_content_falls_back_to_download(tmp_path, monkeypatch):
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    impostor = other / "weights.bin"
+    impostor.write_bytes(b"y" * len(PAYLOAD))  # same name and size, different bytes
+    monkeypatch.setenv("SS_MODEL_DIRS", str(other))
+    with TestClient(create_app(make_config(tmp_path / "app", catalog=_dl_catalog()))) as c:
+        auth(c)
+        ctx = c.app.state.ctx
+        calls = []
+
+        def fake_open(_c, url, headers):
+            calls.append(url)
+            return FakeResponse(PAYLOAD, headers.get("Range"))
+
+        monkeypatch.setattr(ctx.downloads, "_open", fake_open)
+        assert c.post("/api/v1/models/dl-test/download").status_code == 202
+        assert wait_for(lambda: ctx.models.is_installed("dl-test"), timeout=20)
+        assert calls  # the checksum failed, so it was downloaded
+        dest = ctx.models.model_dir(ctx.catalog.get("dl-test")) / "weights.bin"
+        assert dest.read_bytes() == PAYLOAD and impostor.read_bytes() == b"y" * len(PAYLOAD)

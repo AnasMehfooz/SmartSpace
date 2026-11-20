@@ -22,9 +22,11 @@ GET  /workspace                      null -> onboarding
 GET  /models/catalog                 no active embedding model -> onboarding
 1 Welcome
 2 Pick folder (Tauri dialog) -> PUT /workspace {root_path}            400 WORKSPACE_PATH_INVALID shows the message
-3 GET /system/hardware               {tier, cpu_name, ram_total_mb, gpus[...], battery, ...}
+3 GET /system/hardware               {tier, cpu_name, ram_total_mb, gpus[...], best_gpu, battery, ...}
 4 GET /models/recommendations        {tier, ctx_cap, recommended:{embedding,llm,ocr}, alternatives[], warnings[]}
+  (let the user pick: recommended set, or any alternative; prefer ones that are installed or have local_copy)
   POST /models/{id}/download         202 {download_id}; progress on GET /models/downloads/events
+                                     (a model with local_copy is installed from that copy, no internet)
   (first model of a role is auto-activated when the download completes)
 5 POST /index/start                  202; progress on GET /index/events -> redirect to Home
 ```
@@ -36,13 +38,13 @@ GET  /models/catalog                 no active embedding model -> onboarding
 | system | `GET /health` | `{status, ready, version, db_ok, llm_state}` |
 | | `POST /system/shutdown` | Tauri calls this on quit, waits 3 s, then kills |
 | | `GET /system/info` | version, data_dir, sizes, python, platform, logs_dir |
-| | `GET /system/hardware`, `POST /system/hardware/scan` | profile + `tier` |
-| models | `GET /models/catalog` | each: `status` (not_installed/downloading/installed/failed), `is_active`, `recommended`, `fits_hardware` (false → red "may be slow or crash"), `download` (live progress or queue position) |
-| | `GET /models/recommendations` | |
+| | `GET /system/hardware`, `POST /system/hardware/scan` | profile + `tier`; `best_gpu` = the usable GPU with the most VRAM (the one the tier and the LLM use; show this one, `gpus[]` keeps the driver's order) |
+| models | `GET /models/catalog` | each: `status` (not_installed/downloading/installed/failed), `is_active`, `recommended`, `fits_hardware` (false → red "may be slow or crash"), `download` (live progress or queue position), `local_copy` (folder of an identical copy already on this PC, or null) |
+| | `GET /models/recommendations` | `alternatives[]` lists **every** other embedding and language model, also ones above this PC's tier: `{id, role, display_name, size_bytes, fits_hardware, note, status, local_copy}`, installed and found-on-this-PC first. The recommendation is only a default; always let the user choose |
 | | `POST /models/{id}/download` / `POST /models/{id}/cancel` | 507 `DISK_FULL` if not enough space |
 | | `POST /models/{id}/activate` body `{confirm_reindex}` | embedding change with an existing index → 409 `REINDEX_REQUIRED` until `confirm_reindex: true`; 409 `INDEX_BUSY` while indexing |
 | | `DELETE /models/{id}` | 409 `MODEL_ACTIVE` for the active one |
-| | `GET /models/llm/status` | `{state: stopped/starting/ready/error, model_id, ctx, gpu_layers, backend, device, vram_used_mb, error}` |
+| | `GET /models/llm/status` | `{state: stopped/starting/ready/error, model_id, ctx, gpu_layers, backend, device, vram_used_mb, error}`; `device` is the GPU llama.cpp uses (e.g. `CUDA0`), null on CPU |
 | | `POST /models/llm/start` (202, then poll status), `POST /models/llm/stop` | the LLM also starts lazily on first use |
 | workspace | `GET /workspace` | `null` or `{root_path, status, created_at, last_scan_at, exists, counts}` |
 | | `PUT /workspace` `{root_path, replace?}` | another path → 409 `WORKSPACE_EXISTS` unless `replace: true` (purges old index); response has `warnings[]` |
@@ -91,6 +93,8 @@ POST /search
 - `snippet.text` is **HTML-escaped**; only `<mark>` tags are added, so it is safe for `dangerouslySetInnerHTML`.
 - `mode: "quick"` (Spotlight): max 6 results with `file_id, rel_path, name, ext, kind, score, snippet` only.
 - `date_from/date_to` filter on file modification time (`YYYY-MM-DD` or ISO datetime). Queries are never stored.
+- Only files Smart Space reads are returned: a file removed with `DELETE /files/{id}/index`, skipped or in error
+  never shows up, not even when its name matches.
 
 ## Server-Sent Events
 
@@ -108,7 +112,7 @@ Read with `fetch` + a stream parser so the Bearer header can be sent (`event:` /
 | `summary_done` / `summary_failed` | `{file_id}` |
 
 **`GET /models/downloads/events`**: `queued {model_id, position}`, `progress {model_id, bytes_done, bytes_total,
-speed_bps, eta_s}` (every 500 ms), `completed {model_id}`, `failed {model_id, message}`, `cancelled {model_id}`.
+speed_bps, eta_s, source}` (every 500 ms; `source: "local"` while a copy already on this PC is verified and installed), `completed {model_id}`, `failed {model_id, message}`, `cancelled {model_id}`.
 
 **`POST /chat/sessions/{id}/messages`** (response is the stream, in this order):
 
@@ -117,7 +121,7 @@ speed_bps, eta_s}` (every 500 ms), `completed {model_id}`, `failed {model_id, me
 | `meta` | `{message_id, user_message_id, model_id, search_only}`; `search_only: true` → show "Install a language model to get answers" |
 | `files` | `{results: [...search result objects...]}` (top 5 file cards, always sent) |
 | `token` | `{t: "The rent is "}` (many) |
-| `sources` | `{citations: [{n, file_id, chunk_id, page, name, rel_path, score}]}` maps `[n]` in the answer |
+| `sources` | `{citations: [{n, file_id, chunk_id, page, name, rel_path, score}]}` maps `[n]` in the answer. When the model forgets the `[n]` markers, the sources are still filled in: from a file name in the answer, or else from the numbers it quotes (`chunk_id` is then the passage holding them). So list `citations` as the sources even if the text has no `[n]`. An answer that says it could not find anything has **no** citations: show the `files` cards as "possibly related" instead |
 | `done` | `{message_id, tokens_in, tokens_out, took_ms, stopped, failed}` |
 | `error` | `{code: LLM_NOT_READY / LLM_START_FAILED / MODEL_NOT_INSTALLED / INTERNAL_ERROR, message, details}` (then `done`) |
 

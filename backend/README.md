@@ -9,7 +9,7 @@ Implements SDD sections 4 to 10, 13 and 15 for the MVP cut line (16.3).
 ```powershell
 cd backend
 uv sync --python 3.11                                                    # Python 3.11 venv + pinned deps (uv.lock)
-powershell -ExecutionPolicy Bypass -File ..\scripts\fetch_llama_server.ps1   # pinned llama.cpp b12475, CPU + Vulkan, SHA-256 checked
+powershell -ExecutionPolicy Bypass -File ..\scripts\fetch_llama_server.ps1 -Variants cpu,vulkan,cuda   # pinned llama.cpp b12475, SHA-256 checked
 powershell -ExecutionPolicy Bypass -File ..\scripts\dev_backend.ps1          # http://127.0.0.1:8765, token "dev", Swagger at /docs
 ```
 
@@ -97,6 +97,24 @@ tests/               pytest suite, fixture generator, stub LLM, search eval set
 | `SS_DEV` | 0 | 1 enables `/docs` without a token |
 | `SS_LLAMA_SERVER` | auto | explicit llama-server.exe (else `bin/llama/{cuda,vulkan,cpu}/`, next to the exe, or PATH) |
 | `SS_LLM_EXTERNAL_URL` | - | use an already running OpenAI-compatible server instead of spawning llama-server |
+| `SS_MODEL_DIRS` | - | extra folders (`;`-separated) to look in for models that are already on the PC |
+| `SS_LOCAL_MODEL_SEARCH` | 1 | 0 = only search `SS_MODEL_DIRS` for existing models, not the default places |
+
+## GPU build choice
+
+On NVIDIA GPUs use the **CUDA** build (`fetch_llama_server.ps1 -Variants cpu,vulkan,cuda`); the runner prefers it
+automatically. Measured with Qwen2.5 3B on the demo laptop's RTX 3050 4 GB: CUDA 72 tokens/s (prompt 2,510 t/s),
+Vulkan 58 tokens/s (prompt 1,611 t/s, plus a 15 s first-answer warm-up), CPU 18 tokens/s. On a new GPU generation
+(RTX 50-series) the very first CUDA start can take over a minute while the driver compiles kernels; GPU starts
+therefore get 300 s before they count as failed (CPU: 60 s). Later starts take a few seconds.
+
+## Models already on the PC
+
+Before downloading, the backend looks for an identical copy of each model file (same name and size, then the
+SHA-256 is verified) in other Smart Space data folders (`%APPDATA%\SmartSpace`, `C:\SmartSpaceDemo`), the Hugging
+Face cache, LM Studio's folders, Ollama's blob store, `Downloads` and `SS_MODEL_DIRS`. A match is hard-linked (same
+drive, no extra space) or copied into the data folder; the original is never changed. `GET /models/catalog` shows it
+as `local_copy`, and `POST /models/{id}/download` then installs it without using the internet.
 
 ## Tests
 

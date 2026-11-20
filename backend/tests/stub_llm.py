@@ -14,6 +14,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 
 RAG_ANSWER = "The monthly rent is 950 euros [1]."
+REFUSAL_ANSWER = "I could not find it in the indexed files [1]."
+DRIFTED_QUERY = "Mietvertrag Kaution Miete"
+NAME_ONLY_ANSWER = "The file Mietvertrag_2024.pdf says the rent is 950 euros."
+NUMBERS_ONLY_ANSWER = "Your monthly rent is 950,00 Euro and the deposit is 2.850,00 Euro."
+UNKNOWN_NUMBERS_ANSWER = "The total is 123,45 Euro."
 
 
 def _doc_type(text: str) -> str:
@@ -40,15 +45,29 @@ def create_stub_app(delay_s: float = 0.0) -> FastAPI:
         msgs = body.get("messages", [])
         text = "\n".join(m.get("content", "") for m in msgs)
         if body.get("response_format"):
-            m = re.search(r"File name: (.+)", text)
-            name = m.group(1).strip() if m else "file"
+            names = re.findall(r"File name: (.+)", text)  # the last one is the real file (earlier: worked example)
+            name = names[-1].strip() if names else "file"
             content = json.dumps({"summary": f"Stub summary of {name}.", "doc_type": _doc_type(name),
                                   "tags": ["stub", "fixture", name.split(".")[0].lower()[:20]]})
         elif msgs and msgs[0].get("role") == "system":
-            content = RAG_ANSWER
+            question = msgs[-1].get("content", "")
+            hinted = "is the closest match" in msgs[0].get("content", "")
+            # REFUSE_ONCE: refuses unless the retry hint names the best source; REFUSE_ALWAYS: always refuses
+            if "REFUSE_ALWAYS" in question or ("REFUSE_ONCE" in question and not hinted):
+                content = REFUSAL_ANSWER
+            elif "NAME_ONLY" in question:  # names the file but forgets the [n] marker
+                content = NAME_ONLY_ANSWER
+            elif "NUMBERS_ONLY" in question:  # right facts, but neither [n] nor a file name
+                content = NUMBERS_ONLY_ANSWER
+            elif "UNKNOWN_NUMBERS" in question:  # numbers that are in no source
+                content = UNKNOWN_NUMBERS_ANSWER
+            else:
+                content = RAG_ANSWER
         else:
             m = re.search(r"Last question: (.+)", text)
             content = m.group(1).strip() if m else "Stub block summary."
+            if "DRIFT_TEST" in content:  # a rewrite that wrongly carries over the previous topic
+                content = DRIFTED_QUERY
 
         async def gen():
             words = content.split(" ")

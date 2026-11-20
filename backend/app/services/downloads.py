@@ -13,6 +13,7 @@ import os
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
 
@@ -44,6 +45,7 @@ class _Progress:
         self.total = total
         self.done = 0
         self._publish = publish
+        self.source = "network"  # "local" while a copy already on this PC is verified and installed
         self._last_emit = 0.0
         self._samples: deque[tuple[float, int]] = deque(maxlen=50)
 
@@ -72,6 +74,7 @@ class _Progress:
             "bytes_total": self.total,
             "speed_bps": speed,
             "eta_s": int(remaining / speed) if speed > 0 else None,
+            "source": self.source,
         }
 
 
@@ -209,6 +212,56 @@ class DownloadManager:
                     self._progress = None
                     self._cancel.discard(model_id)
 
+    def _install_local(self, m: CatalogModel, f: CatalogFile, src: Path, dest: Path, prog: _Progress) -> bool:
+        """Use a copy of this file that is already on the PC: hard-link it (same drive, no extra space) or copy
+        it, and keep it only if its SHA-256 matches the catalog. Returns False to fall back to downloading."""
+        from app.services.purge import safe_unlink
+
+        part = self._part_path(m, f)
+        part.parent.mkdir(parents=True, exist_ok=True)
+        if part.exists():
+            safe_unlink(self.ctx, part)
+        prog.source = "local"
+        counted = 0
+        hasher = hashlib.sha256()
+        linked = False
+        try:
+            try:
+                os.link(src, part)
+                linked = True
+                with open(part, "rb") as fh:
+                    while buf := fh.read(8 << 20):
+                        self._check_cancel(m.id)
+                        hasher.update(buf)
+                        prog.add(len(buf))
+                        counted += len(buf)
+            except OSError:  # other drive, or a file system without hard links: copy while hashing
+                with open(src, "rb") as fin, open(part, "wb") as fout:
+                    while buf := fin.read(8 << 20):
+                        self._check_cancel(m.id)
+                        fout.write(buf)
+                        hasher.update(buf)
+                        prog.add(len(buf))
+                        counted += len(buf)
+        except OSError as e:
+            log.warning("local_copy_unreadable", model_id=m.id, file=f.path, error=e.__class__.__name__)
+            ok = False
+        else:
+            ok = counted == f.size_bytes and hasher.hexdigest() == f.sha256
+            if not ok:
+                log.warning("local_copy_mismatch", model_id=m.id, file=f.path)
+        if not ok:
+            if part.exists():
+                safe_unlink(self.ctx, part)  # removes only our link/copy, never the original
+            prog.add(-counted)
+            prog.source = "network"
+            self.ctx.local_models.forget(m.id)
+            return False
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(part, dest)
+        log.info("model_file_from_local_copy", model_id=m.id, file=f.path, linked=linked)
+        return True
+
     def _remaining_bytes(self, m: CatalogModel) -> int:
         d = self.ctx.models.model_dir(m)
         total = 0
@@ -265,21 +318,30 @@ class DownloadManager:
         prog = _Progress(m.id, total, self._publish)
         with self._cond:
             self._progress = prog
+        local = self.ctx.local_models.find(m) or {}
         free = self.ctx.models.disk_free_bytes()
         remaining = self._remaining_bytes(m)
+        models_drive = Path(self.ctx.cfg.models_dir).resolve().drive.lower()
+        for f in m.files:  # a local copy on the same drive is hard-linked: it needs no extra space
+            src = local.get(f.path)
+            if src is not None and Path(src).resolve().drive.lower() == models_drive:
+                remaining = max(0, remaining - f.size_bytes)
         if free < remaining * 1.1:
             raise DownloadError("Not enough free disk space (DISK_FULL)")
         self.ctx.cfg.tmp_dir.mkdir(parents=True, exist_ok=True)
         timeout = httpx.Timeout(30.0, read=60.0)
         with httpx.Client(timeout=timeout, headers={"User-Agent": "SmartSpace/0.1"}) as client:
             for f in m.files:
-                self._download_file(client, m, f, prog)
+                self._download_file(client, m, f, prog, local.get(f.path))
         self._publish("progress", prog.snapshot())
 
-    def _download_file(self, client: httpx.Client, m: CatalogModel, f: CatalogFile, prog: _Progress) -> None:
+    def _download_file(self, client: httpx.Client, m: CatalogModel, f: CatalogFile, prog: _Progress,
+                       local_src: Path | None = None) -> None:
         dest = self.ctx.models.model_dir(m) / f.path
         if dest.exists() and dest.stat().st_size == f.size_bytes:
             prog.add(f.size_bytes)
+            return
+        if local_src is not None and self._install_local(m, f, Path(local_src), dest, prog):
             return
         part = self._part_path(m, f)
         hasher = hashlib.sha256()

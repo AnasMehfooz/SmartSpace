@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -13,17 +14,42 @@ if TYPE_CHECKING:
 
 log = get_logger("summarizer")
 
-PROMPT_VERSION = "s2"  # s2 = s1 + doc_type definitions; older summaries are regenerated
+PROMPT_VERSION = "s3"  # s3 = fact-first, written in the file's language; doc_type from its own short
+#                      classification request (29/30 correct vs 21/30 inside the summary request, 3B
+#                      model). Older summaries are regenerated.
+LANGUAGE_NAMES = {"de": "German", "en": "English"}
 DOC_TYPES = ["invoice", "contract", "cv", "lecture", "note", "report", "letter", "form", "photo", "other"]
 SUMMARY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "summary": {"type": "string"},
-        "doc_type": {"type": "string", "enum": DOC_TYPES},
         "tags": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 8},
     },
-    "required": ["summary", "doc_type", "tags"],
+    "required": ["summary", "tags"],
     "additionalProperties": False,
+}
+CLASSIFY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"doc_type": {"type": "string", "enum": DOC_TYPES}},
+    "required": ["doc_type"],
+    "additionalProperties": False,
+}
+CLASSIFY_CHARS = 2500  # the start of a document is enough to tell its kind
+# One worked example, sent as its own earlier turn, shows the fact-first style. An inline example in the
+# instructions made the 3B model start fact-first but also copy the example's date into other summaries;
+# with no example at all, 18/30 summaries began "This document ...". The example has no dates or amounts.
+FEW_SHOT = {
+    "de": ("Antrag_Bibliotheksausweis.pdf",
+           "Stadtbibliothek Mitte\nAntrag auf einen Bibliotheksausweis\nName: Lisa Weber\nAusweisart: Jahresausweis\n"
+           "Unterschrift: vorhanden",
+           {"summary": "Antrag auf einen Jahresausweis der Stadtbibliothek Mitte, gestellt von Lisa Weber. "
+                       "Der Antrag ist unterschrieben.",
+            "tags": ["bibliothek", "bibliotheksausweis", "antrag", "jahresausweis"]}),
+    "en": ("Library_Card_Application.pdf",
+           "Riverside Library\nLibrary card application\nName: Lisa Weber\nCard type: annual card\nSigned: yes",
+           {"summary": "Application for an annual library card at Riverside Library, made by Lisa Weber. "
+                       "The application is signed.",
+            "tags": ["library", "library card", "application", "annual card"]}),
 }
 MAX_INPUT_CHARS = 24000  # ~6,000 tokens (chars/4)
 BLOCK_CHARS = 12000  # ~3,000 tokens per map step
@@ -55,7 +81,7 @@ class Summarizer:
 
     def summarize_file(self, file_id: int, should_abort: Callable[[], bool]) -> bool:
         db = self.ctx.db
-        f = db.query_one("SELECT id, name, status FROM files WHERE id = ?", (file_id,))
+        f = db.query_one("SELECT id, name, status, language FROM files WHERE id = ?", (file_id,))
         if f is None or f["status"] != "indexed":
             return False
         rows = db.query(
@@ -64,6 +90,10 @@ class Summarizer:
             db.execute("UPDATE files SET summary_state='none' WHERE id=?", (file_id,))
             return False
         text = "\n\n".join(r["text"] for r in rows)
+        head = text[:CLASSIFY_CHARS]
+        # Name the language explicitly: "same language as the document" alone is ignored by small models, which
+        # then translate (and mistranslate) German terms such as "Haftpflichtversicherung".
+        language = LANGUAGE_NAMES.get(f["language"] or "", "the same language as the document")
         budget = self._input_budget_chars()
         client = self.ctx.llm_client
         if len(text) > budget:
@@ -74,25 +104,45 @@ class Summarizer:
             partials = []
             for i, b in enumerate(blocks, 1):
                 out, _ = client.complete(
-                    [{"role": "user", "content": tpl.format(name=f["name"], part=i, parts=len(blocks), text=b)}],
+                    [{"role": "user", "content": tpl.format(name=f["name"], part=i, parts=len(blocks), text=b, language=language)}],
                     max_tokens=160, temperature=0.1, should_abort=should_abort)
                 partials.append(out.strip())
             text = "\n".join(partials)[:budget]
-        prompt = self._prompt("summarize.txt").format(name=f["name"], text=text[:budget])
-        data, _ = client.complete_json([{"role": "user", "content": prompt}], SUMMARY_SCHEMA, max_tokens=700,
-                                       temperature=0.2, should_abort=should_abort)
+        messages = self.summary_messages(f["name"], text[:budget], f["language"])
+        data, _ = client.complete_json(messages, SUMMARY_SCHEMA, max_tokens=700, temperature=0.2,
+                                       should_abort=should_abort)
         summary = re.sub(r"\s+", " ", str(data.get("summary") or "")).strip()
         if not summary:
             raise ValueError("Empty summary")
-        doc_type = str(data.get("doc_type") or "other").lower()
-        if doc_type not in DOC_TYPES:
-            doc_type = "other"
+        doc_type = self._classify(f["name"], head, should_abort)
         tags = clean_tags(data.get("tags") or [])
         model_id = self.ctx.llm.model_id or (self.ctx.models.active_id("llm") or "unknown")
-        lang = db.scalar("SELECT language FROM files WHERE id = ?", (file_id,))
-        self._store(file_id, summary, doc_type, tags, lang, model_id)
+        self._store(file_id, summary, doc_type, tags, f["language"], model_id)
         log.info("summary_done", file_id=file_id)
         return True
+
+    def summary_messages(self, name: str, text: str, lang: str | None) -> list[dict[str, str]]:
+        """The worked example (in the file's language) as an earlier turn, then the real request."""
+        language = LANGUAGE_NAMES.get(lang or "", "the same language as the document")
+        tpl = self._prompt("summarize.txt")
+        ex_name, ex_text, ex_answer = FEW_SHOT.get(lang or "", FEW_SHOT["en"])
+        ex_language = LANGUAGE_NAMES["de" if (lang or "") == "de" else "en"]
+        return [
+            {"role": "user", "content": tpl.format(name=ex_name, text=ex_text, language=ex_language)},
+            {"role": "assistant", "content": json.dumps(ex_answer, ensure_ascii=False)},
+            {"role": "user", "content": tpl.format(name=name, text=text, language=language)},
+        ]
+
+    def _classify(self, name: str, head: str, should_abort: Callable[[], bool]) -> str:
+        """doc_type from a short request of its own: small models label much better when that is the only task."""
+        try:
+            data, _ = self.ctx.llm_client.complete_json(
+                [{"role": "user", "content": self._prompt("classify.txt").format(name=name, text=head)}],
+                CLASSIFY_SCHEMA, max_tokens=20, temperature=0.0, should_abort=should_abort)
+        except ValueError:
+            return "other"
+        doc_type = str(data.get("doc_type") or "other").lower()
+        return doc_type if doc_type in DOC_TYPES else "other"
 
     def _store(self, file_id: int, summary: str, doc_type: str, tags: list[str], lang: str | None, model_id: str) -> None:
         db = self.ctx.db

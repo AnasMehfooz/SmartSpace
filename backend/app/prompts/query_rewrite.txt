@@ -1,5 +1,7 @@
 Rewrite the last user question so it can be understood without the conversation.
-Keep names, dates and numbers. Same language as the question. Output only the question.
+Only add details from the conversation when the question refers to it (for example "it", "that", "there",
+"and the deposit?"). If the question is already complete on its own or is about a new topic, output it
+exactly unchanged. Keep names, dates and numbers. Same language as the question. Output only the question.
 Conversation:
 {history}
 Last question: {question}

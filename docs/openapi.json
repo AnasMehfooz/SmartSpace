@@ -2279,6 +2279,28 @@
             "type": "string",
             "title": "Role"
           },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
           "fits_hardware": {
             "type": "boolean",
             "title": "Fits Hardware"
@@ -2293,6 +2315,30 @@
               }
             ],
             "title": "Note"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status",
+            "description": "not_installed / downloading / installed / failed"
+          },
+          "local_copy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local Copy",
+            "description": "Folder of a copy already on this PC (reused instead of downloading); null if none"
           }
         },
         "type": "object",
@@ -2776,6 +2822,18 @@
               }
             ],
             "title": "Position"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source",
+            "description": "\"network\", or \"local\" while a copy already on this PC is verified and installed"
           }
         },
         "additionalProperties": true,
@@ -3302,6 +3360,17 @@
             "title": "Gpus",
             "default": []
           },
+          "best_gpu": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GpuOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The usable GPU with the most VRAM (used for the tier and the language model); null if none is usable"
+          },
           "disk_free_mb": {
             "anyOf": [
               {
@@ -3794,6 +3863,18 @@
                 "type": "null"
               }
             ]
+          },
+          "local_copy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local Copy",
+            "description": "Folder of a copy already on this PC; POST /models/{id}/download then installs it without downloading"
           }
         },
         "type": "object",

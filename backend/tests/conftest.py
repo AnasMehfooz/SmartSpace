@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -9,6 +10,10 @@ from typing import Callable
 import pytest
 
 from app.config import Config, app_dir
+
+# Tests never look for models in the developer's real folders (Downloads, HF cache, other data dirs).
+os.environ["SS_LOCAL_MODEL_SEARCH"] = "0"
+os.environ.pop("SS_MODEL_DIRS", None)
 
 TOKEN = "test-token"
 
