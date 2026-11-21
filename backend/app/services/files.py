@@ -10,6 +10,7 @@ from app.db import utcnow
 from app.db.database import ns_to_iso
 from app.errors import AppError
 from app.services.paths import clean_rel, safe_join
+from app.services.summarizer import strip_keywords
 
 if TYPE_CHECKING:
     from app.context import AppContext
@@ -159,7 +160,11 @@ class FilesService:
             "WHERE file_id = ? ORDER BY CASE source WHEN 'summary' THEN 1 ELSE 0 END, chunk_index LIMIT ? OFFSET ?",
             (file_id, limit, offset))
         total = self.db.scalar("SELECT COUNT(*) FROM chunks WHERE file_id = ?", (file_id,)) or 0
-        return {"items": [dict(x) for x in rows], "total": total, "limit": limit, "offset": offset}
+        items = [dict(x) for x in rows]
+        for it in items:  # the summary chunk's keyword line is for search only
+            if it["source"] == "summary":
+                it["text"] = strip_keywords(it["text"])
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     def preview(self, file_id: int, page: int = 1) -> bytes:
         """Downscaled JPEG (max 1024 px) of an image, or of a PDF page. Read-only."""

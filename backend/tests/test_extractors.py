@@ -18,6 +18,44 @@ def test_pdf_text_with_pages(tmp_path):
     assert "Mietvertrag über 950 Euro" in r.segments[0].text
 
 
+def _payslip_pdf(path):
+    """A payroll-style page: a Courier amount whose decimal comma is a drawn line, a date box with a tick between
+    every pair of digits, and amounts printed under column labels on the line above."""
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    cw = 6.0  # Courier at 10 pt: every character is 6 pt wide
+
+    def text(x, y, s, size=10):
+        page.insert_text((x, y), s, fontname="cour", fontsize=size)
+
+    def tick(x, y):
+        page.draw_line((x, y - 0.6), (x, y + 1.6), width=0.24)
+
+    text(48, 100, "Gesamt-Brutto 11.95814")
+    tick(48 + cw * len("Gesamt-Brutto 11.958"), 100)  # the comma, drawn between "8" and "1"
+    text(48, 130, "Datum 100505")
+    tick(48 + cw * len("Datum 10"), 130)
+    tick(48 + cw * len("Datum 1005"), 130)
+    text(300, 160, "Gesamtkosten", size=7)
+    text(420, 160, "Auszahlungsbetrag", size=7)
+    text(300, 172, "104,12")
+    text(420, 172, "982,90")
+    doc.save(str(path))
+    doc.close()
+
+
+def test_pdf_drawn_commas_and_column_labels(tmp_path):
+    p = tmp_path / "payslip.pdf"
+    _payslip_pdf(p)
+    t = extract(p, "pdf", max_pdf_pages=500, ocr=None).segments[0].text
+    assert "11.958,14" in t and "11.95814" not in t  # the drawn comma is back
+    assert "100505" in t  # a date box (a tick between every pair of digits) is left alone
+    assert "Gesamtkosten 104,12" in t and "Auszahlungsbetrag 982,90" in t  # each amount gets its column label
+    assert "Gesamt-Brutto 11.958,14" in t  # labelled on its own line: nothing added
+
+
 def test_pdf_page_limit(tmp_path):
     p = tmp_path / "a.pdf"
     _pdf(p, "\n\n".join("Absatz " * 100 for _ in range(20)))

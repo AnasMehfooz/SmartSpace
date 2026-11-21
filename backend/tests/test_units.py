@@ -7,9 +7,10 @@ from pathlib import Path
 import pytest
 
 from app.errors import AppError
-from app.services.chat import _interleave, canon_number, is_refusal, number_set
+from app.services.chat import AmountFixer, _interleave, canon_number, is_refusal, number_set
 from app.services.files import short_summary
 from app.services.local_models import default_roots
+from app.services.summarizer import strip_keywords, summary_passage
 from app.services.hardware import compute_tier
 from app.services.llm_runner import compute_gpu_layers, fallback_layers, kv_cache_mb, parse_devices
 from app.services.paths import ExclusionMatcher, is_within, safe_join, validate_workspace_root
@@ -221,6 +222,28 @@ def test_canon_number(token, canon):
 def test_number_set_compares_german_and_english_styles():
     assert number_set("Die Kaution beträgt 2.850,00 Euro (seit 2024, in 3 Raten).") == {"2850"}
     assert number_set("a deposit of 2,850 EUR") == number_set("Kaution 2.850,00 €") == {"2850"}
+
+
+def test_amount_fixer_restores_the_source_spelling_while_streaming():
+    fixer = AmountFixer(["Netto-Verdienst 1.042,29 Auszahlungsbetrag 982,90 im Oktober 2026"])
+    pieces = ["Your net pay was 1,04", "2,29 EUR [1], paid out 982.", "90 in October 2026 and 123,45 extra."]
+    out = "".join(fixer.feed(p) for p in pieces) + fixer.flush()
+    # garbled -> the source's own form; a correct English form, the year, [1] and an unknown number stay
+    assert out == "Your net pay was 1.042,29 EUR [1], paid out 982.90 in October 2026 and 123,45 extra."
+    assert fixer.fixed == 1
+
+
+def test_month_names_are_searched_in_both_languages():
+    assert "oktober" in query_terms("payout in october")
+    assert "march" in query_terms("Rechnung März") and "mai" in query_terms("invoice may 2024")
+    assert query_terms("september report") == ["september", "report"]  # same word in both languages
+
+
+def test_summary_passage_adds_type_words_that_reading_never_sees():
+    p = summary_passage("Ein Mietvertrag zwischen zwei Parteien.", "contract")
+    assert "contract" in p and "Vertrag" in p
+    assert strip_keywords(p) == "Ein Mietvertrag zwischen zwei Parteien."
+    assert summary_passage("Some text.", "other") == "Some text." == strip_keywords("Some text.")
 
 
 def test_local_model_roots_respect_opt_out(tmp_path, monkeypatch):

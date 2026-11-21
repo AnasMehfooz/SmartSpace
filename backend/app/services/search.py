@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from app.db.database import ns_to_iso
 from app.errors import AppError
 from app.services.paths import clean_rel
+from app.services.summarizer import strip_keywords
 
 if TYPE_CHECKING:
     from app.context import AppContext
@@ -44,11 +45,22 @@ def normalize_query(q: str) -> str:
     return unicodedata.normalize("NFC", " ".join((q or "").split()))[:500]
 
 
+# English and German month names that differ: a question in one language must find the payslip or invoice of that
+# month in the other (seen: "payout in october" ranked Brutto-Netto-Abrechnung-Oktober-2026.pdf 6th, and the chat
+# answered with another month's amount). Used for keywords and file names; the vector search keeps the question.
+MONTHS: dict[str, tuple[str, ...]] = {
+    "january": ("januar",), "february": ("februar",), "march": ("märz", "maerz"), "may": ("mai",),
+    "june": ("juni",), "july": ("juli",), "october": ("oktober",), "december": ("dezember",),
+}
+MONTHS.update({de: (en,) for en, des in list(MONTHS.items()) for de in des})
+
+
 def query_terms(q: str) -> list[str]:
     out: list[str] = []
     for t in _TERM.findall(q.lower()):
-        if t not in out:
-            out.append(t)
+        for x in (t, *MONTHS.get(t, ())):
+            if x not in out:
+                out.append(x)
     return out[:32]
 
 
@@ -263,8 +275,9 @@ class SearchService:
             snippet = None
             if cid is not None and cid in chunks:
                 c = chunks[cid]
+                text = strip_keywords(c["text"]) if c["source"] == "summary" else c["text"]
                 snippet = {"chunk_id": cid, "page": c["page_start"], "source": c["source"],
-                           "text": make_snippet(c["text"], terms, 140 if quick else 280)}
+                           "text": make_snippet(text, terms, 140 if quick else 280)}
             card: dict[str, Any] = {
                 "file_id": fid, "rel_path": f["rel_path"], "name": f["name"], "ext": f["ext"], "kind": f["kind"],
                 "score": round(score, 5), "snippet": snippet,
@@ -292,34 +305,44 @@ class SearchService:
 
     def search_with_chunks(self, query: str, filters: "SearchFilters | None", file_limit: int, k: int,
                            max_per_file: int = 2) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """For RAG: file cards plus the top-k chunks (max `max_per_file` per file)."""
+        """For RAG: file cards plus the top-k text passages (max `max_per_file` per file), and the AI summary of
+        every file among them. The summary is short and outside both limits: when it took one of a file's two slots,
+        a payslip came with its month passage and summary but without the passage holding its amounts, and the
+        chat answered with another month's payout."""
         q = normalize_query(query)
         terms, scores, chunk_file, names = self._retrieve(q, filters)
         cards = self._cards(self._rank_files(scores, chunk_file, names, file_limit), terms, "full")
         chunk_scores = {cid: s + (FILENAME_BONUS if chunk_file[cid] in names else 0.0) for cid, s in scores.items()}
+        summary_ids = {r["id"] for r in self.db.query(
+            f"SELECT id FROM chunks WHERE source = 'summary' AND id IN ({_ints(chunk_scores)})")} if chunk_scores else set()
         picked: list[tuple[int, int, float]] = []
         per_file: dict[int, int] = defaultdict(int)
         for cid, s in sorted(chunk_scores.items(), key=lambda kv: (-kv[1], kv[0])):
             fid = chunk_file[cid]
-            if per_file[fid] >= max_per_file:
+            if cid in summary_ids or per_file[fid] >= max_per_file:
                 continue
             per_file[fid] += 1
             picked.append((cid, fid, s))
             if len(picked) >= k:
                 break
-        for fid in names:  # files matched only by name: use their first chunk
+        for fid in names:  # files matched only by name: use their first passage
             if len(picked) >= k:
                 break
             if fid in per_file:
                 continue
             row = self.db.query_one(
-                "SELECT id FROM chunks WHERE file_id = ? ORDER BY CASE source WHEN 'summary' THEN 0 ELSE 1 END, "
+                "SELECT id FROM chunks WHERE file_id = ? ORDER BY CASE source WHEN 'summary' THEN 1 ELSE 0 END, "
                 "chunk_index LIMIT 1", (fid,))
             if row:
                 picked.append((row["id"], fid, FILENAME_BONUS))
                 per_file[fid] += 1
         if not picked:
             return cards, []
+        have = {cid for cid, _, _ in picked}
+        for r in self.db.query(f"SELECT id, file_id FROM chunks WHERE source = 'summary' AND file_id IN "
+                               f"({_ints(dict.fromkeys(fid for _, fid, _ in picked))})"):
+            if r["id"] not in have:
+                picked.append((r["id"], r["file_id"], chunk_scores.get(r["id"], 0.0)))
         rows = {r["id"]: r for r in self.db.query(
             "SELECT c.id, c.file_id, c.page_start, c.page_end, c.text, c.source, f.name, f.rel_path "
             f"FROM chunks c JOIN files f ON f.id = c.file_id WHERE c.id IN ({_ints(c for c, _, _ in picked)})")}
@@ -328,7 +351,8 @@ class SearchService:
             r = rows.get(cid)
             if r is None:
                 continue
+            text = strip_keywords(r["text"]) if r["source"] == "summary" else r["text"]
             chunks.append({"chunk_id": cid, "file_id": fid, "name": r["name"], "rel_path": r["rel_path"],
-                           "page": r["page_start"], "page_end": r["page_end"], "text": r["text"],
+                           "page": r["page_start"], "page_end": r["page_end"], "text": text,
                            "source": r["source"], "score": s})
         return cards, chunks

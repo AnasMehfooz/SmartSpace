@@ -68,8 +68,8 @@ def test_download_resume_and_verify(ctx_client, monkeypatch):
     assert seen_ranges == ["bytes=300000-"]
     dest = ctx.models.model_dir(ctx.catalog.get("dl-test")) / "weights.bin"
     assert dest.read_bytes() == PAYLOAD and not part.exists()
-    # first embedding model downloaded -> auto-activated
-    assert ctx.models.active_id("embedding") == "dl-test"
+    # first embedding model downloaded -> auto-activated (right after it counts as installed, so wait for it)
+    assert wait_for(lambda: ctx.models.active_id("embedding") == "dl-test", timeout=10)
 
 
 def test_checksum_mismatch_fails_and_drops_part(ctx_client, monkeypatch):

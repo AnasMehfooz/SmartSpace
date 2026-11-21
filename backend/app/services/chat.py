@@ -113,6 +113,55 @@ def number_set(text: str) -> set[str]:
     return {c for c in (canon_number(t) for t in _NUM.findall(text or "")) if c}
 
 
+_TAIL_NUMBER = re.compile(r"\d[\d.,]*$")
+
+
+class AmountFixer:
+    """Streams answer text and puts back the source's own spelling of an amount the model garbled by commas and
+    points only: a German source says 1.042,29, the small model wrote "1,042,29". An amount whose digits match no
+    source number, or that already means a source number, is left as it is."""
+
+    def __init__(self, source_texts: list[str]):
+        self.known: set[str] = set()
+        by_digits: dict[str, set[str]] = {}
+        for text in source_texts:
+            for tok in _NUM.findall(text or ""):
+                c = canon_number(tok)
+                if c:
+                    self.known.add(c)
+                    by_digits.setdefault(re.sub(r"\D", "", tok), set()).add(tok)
+        # only spellings that all mean the same number can replace a garbled one
+        self.by_digits = {d: next(iter(toks)) for d, toks in by_digits.items()
+                          if len({canon_number(t) for t in toks}) == 1}
+        self.buf = ""
+        self.fixed = 0
+
+    def _fix(self, text: str) -> str:
+        def repl(m: re.Match) -> str:
+            tok = m.group(0)
+            c = canon_number(tok)
+            if c is None or c in self.known:
+                return tok
+            good = self.by_digits.get(re.sub(r"\D", "", tok))
+            if good is None:
+                return tok
+            self.fixed += 1
+            return good
+        return _NUM.sub(repl, text)
+
+    def feed(self, t: str) -> str:
+        """Text that is safe to send now; a number still growing at the end is held back."""
+        self.buf += t
+        m = _TAIL_NUMBER.search(self.buf)
+        cut = m.start() if m else len(self.buf)
+        out, self.buf = self.buf[:cut], self.buf[cut:]
+        return self._fix(out)
+
+    def flush(self) -> str:
+        out, self.buf = self.buf, ""
+        return self._fix(out)
+
+
 def _interleave(lists: list[list[dict[str, Any]]], key: str, limit: int,
                 max_per_file: int | None = None) -> list[dict[str, Any]]:
     """Merge ranked lists (search for the rewritten and for the original question) by taking turns:
@@ -458,7 +507,12 @@ class ChatService:
                 messages, labelled = self.build_messages(history, content, chunks, ctx_size)
                 state = {"refused": False}
                 retry = bool(labelled) and self._worth_retry(cards)
+                fixer = AmountFixer([c["text"] for c in chunks])
                 async for t in self._stream_checked(messages, stop_event, usage, state, check=retry):
+                    if t := fixer.feed(t):
+                        answer += t
+                        yield "token", {"t": t}
+                if t := fixer.flush():
                     answer += t
                     yield "token", {"t": t}
                 if state["refused"] and not stop_event.is_set():
@@ -468,8 +522,14 @@ class ChatService:
                     messages, labelled = self.build_messages(history, content, chunks, ctx_size,
                                                              hint=self._retry_hint(labelled[0]))
                     async for t in self._stream_checked(messages, stop_event, usage, state, check=False):
+                        if t := fixer.feed(t):
+                            answer += t
+                            yield "token", {"t": t}
+                    if t := fixer.flush():
                         answer += t
                         yield "token", {"t": t}
+                if fixer.fixed:
+                    log.info("chat_amounts_fixed", count=fixer.fixed)
                 # An answer that says it found nothing must not cite files; clients show the files event instead.
                 if not is_refusal(answer):
                     by_n = {c["n"]: c for c in labelled}

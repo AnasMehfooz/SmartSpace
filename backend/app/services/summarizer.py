@@ -14,11 +14,39 @@ if TYPE_CHECKING:
 
 log = get_logger("summarizer")
 
-PROMPT_VERSION = "s3"  # s3 = fact-first, written in the file's language; doc_type from its own short
+PROMPT_VERSION = "s4"  # s3 = fact-first, written in the file's language; doc_type from its own short
 #                      classification request (29/30 correct vs 21/30 inside the summary request, 3B
-#                      model). Older summaries are regenerated.
+#                      model). s4 = the indexed summary passage also carries the document type in English
+#                      and German (DOC_TYPE_WORDS). Older summaries are regenerated.
 LANGUAGE_NAMES = {"de": "German", "en": "English"}
 DOC_TYPES = ["invoice", "contract", "cv", "lecture", "note", "report", "letter", "form", "photo", "other"]
+# Summaries are written in the file's language, so a German lease had no English word for keyword search:
+# "rental contract" ranked meeting notes that mention an "OpenAPI contract" above Mietvertrag_2024.pdf.
+# The document type in both languages, added to the indexed summary passage, lets a query in either language
+# find a file by its kind ("contract" -> Mietvertrag, "Rechnung" -> an English invoice).
+DOC_TYPE_WORDS = {
+    "invoice": "invoice bill receipt payment Rechnung Quittung Beleg Zahlung",
+    "contract": "contract agreement Vertrag Vereinbarung",
+    "cv": "CV resume curriculum vitae Lebenslauf",
+    "lecture": "lecture course Vorlesung Kurs",
+    "note": "note Notiz",
+    "report": "report Bericht",
+    "letter": "letter Brief Schreiben",
+    "form": "form application Formular Antrag",
+    "photo": "photo picture image Foto Bild",
+}
+KEYWORDS_MARK = "\n\nKeywords: "
+
+
+def summary_passage(summary: str, doc_type: str | None) -> str:
+    """Text of the indexed summary chunk: the summary, then the document type in English and German."""
+    words = DOC_TYPE_WORDS.get(doc_type or "")
+    return f"{summary}{KEYWORDS_MARK}{words}" if words else summary
+
+
+def strip_keywords(text: str) -> str:
+    """The summary without the keyword line, for anything a person or the chat model reads."""
+    return (text or "").split(KEYWORDS_MARK, 1)[0]
 SUMMARY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -166,10 +194,11 @@ class Summarizer:
                              (file_id, tag_id))
             old = conn.execute("SELECT id FROM chunks WHERE file_id = ? AND source = 'summary'", (file_id,)).fetchall()
             conn.execute("DELETE FROM chunks WHERE file_id = ? AND source = 'summary'", (file_id,))
+            passage = summary_passage(summary, doc_type)
             cur = conn.execute(
                 "INSERT INTO chunks (file_id, chunk_index, source, page_start, page_end, text, char_count, "
                 "embedding_model) VALUES (?, 0, 'summary', NULL, NULL, ?, ?, ?)",
-                (file_id, summary, len(summary), embedder.model_id if embedder else ""),
+                (file_id, passage, len(passage), embedder.model_id if embedder else ""),
             )
             chunk_id = int(cur.lastrowid)
             conn.execute("UPDATE files SET summary_state='done', updated_at=? WHERE id=?", (now, file_id))
@@ -177,5 +206,5 @@ class Summarizer:
         if embedder is not None:
             if old:
                 self.ctx.vectors.delete_chunks(embedder.model_id, [r["id"] for r in old])
-            vec = embedder.embed_passages([summary])
+            vec = embedder.embed_passages([passage])
             self.ctx.vectors.add(embedder.model_id, embedder.dim, [chunk_id], [file_id], vec)

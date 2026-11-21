@@ -115,6 +115,34 @@ def test_search_expected_file_in_top3(env, query, expected):
     assert expected in _paths(c, query)[:3]
 
 
+def test_document_type_words_find_files_across_languages(env):
+    c, _, llm = env
+    # The lease and its summary are German; its document type is indexed in English and German, so the English
+    # query ranks it above the meeting notes that only mention an "OpenAPI contract" (seen live: second place).
+    assert _paths(c, "rental contract")[0] == "Housing/Mietvertrag_2024.pdf"
+    assert _paths(c, "Vertrag")[0] == "Housing/Mietvertrag_2024.pdf"
+    # the keyword line is for search only: never in snippets, chunk text or what the chat model reads
+    results = c.post("/api/v1/search", json={"query": "contract Vertrag"}).json()["results"]
+    assert results and all("Keywords:" not in (r["snippet"] or {}).get("text", "") for r in results)
+    lease = next(r for r in results if r["name"] == "Mietvertrag_2024.pdf")
+    chunks = c.get(f"/api/v1/files/{lease['file_id']}/chunks?limit=50").json()["items"]
+    assert any(ch["source"] == "summary" for ch in chunks)
+    assert all("Keywords:" not in ch["text"] for ch in chunks)
+    sid = c.post("/api/v1/chat/sessions", json={}).json()["id"]
+    _ask(c, sid, "rental contract")
+    assert "Keywords:" not in llm.app.state.requests[-1]["messages"][0]["content"]
+
+
+def test_chat_context_has_text_passages_and_the_summary(env):
+    c, _, llm = env
+    # the AI summary is outside the two-passages-per-file limit, so it never pushes out the passage with the facts
+    sid = c.post("/api/v1/chat/sessions", json={}).json()["id"]
+    _ask(c, sid, "Mietvertrag Miete Kaution")
+    system = llm.app.state.requests[-1]["messages"][0]["content"]
+    lease = system.split("(file: Mietvertrag_2024.pdf", 1)[1].split("\n\n[", 1)[0]
+    assert "AI summary of the file:" in lease and "Text" in lease
+
+
 def test_search_eval_with_hash_embedder(env):
     c, _, _ = env
     res = evaluate(lambda q: _paths(c, q, limit=10))
